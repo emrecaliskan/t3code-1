@@ -38,16 +38,19 @@ const keyOf = (thread: Pick<SidebarLineageThread, "environmentId" | "id">) =>
 
 /**
  * Nests each candidate under its nearest rendering ancestor by stored lineage; a subagent whose
- * chain breaks falls back to its root. Without one, a thread is top-level when `topLevel` places
- * it (by default, when listed). Cycles are cut where met, so every thread renders once.
+ * chain breaks falls back to its root, and a thread with its own section nests only within it.
+ * Otherwise a thread is top-level when placed (by default, when listed). Cycles are cut where met.
  */
 export function buildSidebarLineageForest<T extends SidebarLineageThread>(input: {
   readonly candidates: ReadonlyArray<T>;
   readonly threads: ReadonlyArray<SidebarLineageThread>;
-  /** Keys of rows the sidebar places top-level; a parent outside it cannot hold children. */
-  readonly topLevel?: ReadonlySet<string>;
+  readonly placement?: {
+    /** Rows the sidebar places top-level; a parent outside them cannot hold children. */
+    readonly placed: ReadonlySet<string>;
+    readonly sectionOf: ReadonlyMap<string, string>;
+  };
 }): SidebarLineageForest<T> {
-  const { topLevel } = input;
+  const { placement } = input;
   const threadByKey = new Map(input.threads.map((thread) => [keyOf(thread), thread] as const));
   const candidateByKey = new Map(
     input.candidates.map((thread) => [keyOf(thread), thread] as const),
@@ -85,21 +88,29 @@ export function buildSidebarLineageForest<T extends SidebarLineageThread>(input:
   // A row renders when its parent renders or it is top-level. A row whose parent cannot render,
   // including one met again around a cycle, is cut loose to the top level.
   const renders = new Map<string, boolean | "visiting">();
+  const rowSection = new Map<string, string | undefined>();
   const resolve = (key: string): boolean => {
     const known = renders.get(key);
     if (known === "visiting") return false;
     if (known !== undefined) return known;
     renders.set(key, "visiting");
     const parentKey = parentByKey.get(key);
+    const ownSection = placement?.sectionOf.get(key);
     let rendered: boolean;
-    if (parentKey !== undefined && resolve(parentKey)) {
+    if (
+      parentKey !== undefined &&
+      resolve(parentKey) &&
+      (ownSection === undefined || ownSection === rowSection.get(parentKey))
+    ) {
       rendered = true;
+      rowSection.set(key, rowSection.get(parentKey));
     } else {
       parentByKey.delete(key);
+      rowSection.set(key, ownSection);
       rendered =
-        topLevel === undefined
+        placement === undefined
           ? isListedThreadLineage(candidateByKey.get(key)!.lineage)
-          : topLevel.has(key);
+          : placement.placed.has(key);
     }
     renders.set(key, rendered);
     return rendered;

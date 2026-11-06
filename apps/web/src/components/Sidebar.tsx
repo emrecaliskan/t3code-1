@@ -568,34 +568,54 @@ function useSidebarThreads(input: {
             };
           },
         );
-  // A child nests only under a parent the sidebar places; otherwise it keeps its own row.
+  const sectionOf = new Map<string, SidebarSection>();
+  for (const [list, section] of [
+    [partition.pinnedThreads, "pinned"],
+    [partition.activeThreads, "active"],
+    [partition.workingThreads, "working"],
+    [partition.snoozedThreads, "snoozed"],
+    [settledThreads, "settled"],
+  ] as const) {
+    for (const thread of list) sectionOf.set(threadShellKey(thread), section);
+  }
+  // A child nests only under a placed parent; a fork, only one in its own section.
   const lineageForest = buildSidebarLineageForest({
     candidates: lineageCandidates,
     threads,
-    topLevel: new Set(
-      [
-        ...partition.pinnedThreads,
-        ...(placedFolders === null
-          ? partition.activeThreads
-          : placedFolders.flatMap((folder) => folder.threads)),
-        ...placedWorkingThreads,
-        ...placedSnoozedThreads,
-        ...placedSettledThreads,
-      ].map(threadShellKey),
-    ),
+    placement: {
+      sectionOf,
+      placed: new Set(
+        [
+          ...partition.pinnedThreads,
+          ...(placedFolders === null
+            ? partition.activeThreads
+            : placedFolders.flatMap((folder) => folder.threads)),
+          ...placedWorkingThreads,
+          ...placedSnoozedThreads,
+          ...placedSettledThreads,
+        ].map(threadShellKey),
+      ),
+    },
   });
   const topLevelOnly = (list: readonly EnvironmentThreadShell[]) =>
     list.filter((thread) => !lineageForest.nested.has(threadShellKey(thread)));
   const pinnedThreads = topLevelOnly(partition.pinnedThreads);
   const activeThreads = topLevelOnly(partition.activeThreads);
-  const workingThreads = topLevelOnly(partition.workingThreads);
-  const snoozedThreads = topLevelOnly(partition.snoozedThreads);
+  // Shelf counts treat every shelf as open, so opening one never changes another's count.
+  const openForest = buildSidebarLineageForest({
+    candidates: lineageCandidates,
+    threads,
+    placement: { sectionOf, placed: new Set(sectionOf.keys()) },
+  });
+  const ownRows = (list: readonly EnvironmentThreadShell[]) =>
+    list.filter((thread) => !openForest.nested.has(threadShellKey(thread)));
+  const workingThreads = ownRows(partition.workingThreads);
+  const snoozedThreads = ownRows(partition.snoozedThreads);
   const visibleWorkingThreads = topLevelOnly(placedWorkingThreads);
   const visibleSnoozedThreads = topLevelOnly(placedSnoozedThreads);
   const renderedSettledThreads = topLevelOnly(placedSettledThreads);
-  // Settled forks drawn under a parent elsewhere have no Settled row, so the shelf leaves them out.
   const settledCount =
-    topLevelOnly(settledThreads).length + olderSettledShelf.unloadedCount(partition.visibleThreads);
+    ownRows(settledThreads).length + olderSettledShelf.unloadedCount(partition.visibleThreads);
   const projectFolders =
     placedFolders?.map((folder) => ({ ...folder, threads: topLevelOnly(folder.threads) })) ?? null;
   const lineageRows = flattenSidebarLineage({
@@ -638,16 +658,6 @@ function useSidebarThreads(input: {
       ? [input.routeThreadRef]
       : []),
   ]);
-  const sectionByThreadKey = new Map<string, SidebarSection>();
-  for (const [list, section] of [
-    [pinnedThreads, "pinned"],
-    [activeThreads, "active"],
-    [workingThreads, "working"],
-    [snoozedThreads, "snoozed"],
-    [settledThreads, "settled"],
-  ] as const) {
-    for (const thread of list) sectionByThreadKey.set(threadShellKey(thread), section);
-  }
   return {
     ...partition,
     pinnedThreads,
@@ -675,7 +685,7 @@ function useSidebarThreads(input: {
     settledVisibleCount,
     settledCount,
     olderSettledShelf,
-    hiddenSettledCount: Math.max(0, settledCount - topLevelOnly(visibleSettledThreads).length),
+    hiddenSettledCount: Math.max(0, settledCount - ownRows(visibleSettledThreads).length),
     showMoreSettled: () =>
       setSettledTail((current) => ({
         scopeKey: current.scopeKey,
@@ -699,7 +709,7 @@ function useSidebarThreads(input: {
     threadByKey: new Map(orderedThreads.map((thread) => [threadShellKey(thread), thread] as const)),
     settledThreadKeys: new Set(settledThreads.map(threadShellKey)),
     snoozedThreadKeys: new Set(snoozedThreads.map(threadShellKey)),
-    sectionByThreadKey,
+    sectionByThreadKey: sectionOf,
     pinnedKeys: pinnedThreads.map(threadShellKey),
     activeKeys: activeThreads.map(threadShellKey),
     pinnedKeysById: new Map(

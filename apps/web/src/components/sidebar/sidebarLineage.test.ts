@@ -111,27 +111,39 @@ describe("buildSidebarLineageForest", () => {
     ]);
   });
 
-  it("keeps a fork's own row when the sidebar does not place its parent", () => {
+  it("nests a fork only under a placed parent in its own section", () => {
     const threads = [
-      thread("shelved"),
-      thread("fork", { parent: "shelved", relationship: "fork" }),
-      thread("worker", { parent: "shelved" }),
-      thread("fork-worker", { parent: "fork", root: "shelved" }),
+      thread("parent"),
+      thread("fork", { parent: "parent", relationship: "fork" }),
+      thread("worker", { parent: "parent" }),
+      thread("fork-worker", { parent: "fork", root: "parent" }),
     ];
-    const forest = buildSidebarLineageForest({
-      candidates: threads,
-      threads,
-      topLevel: new Set([key("fork")]),
-    });
-    expect([...forest.nested]).toEqual([key("fork-worker")]);
-    expect(forest.childrenByKey.get(key("shelved"))).toBeUndefined();
-    expect(
-      buildSidebarLineageForest({
-        candidates: threads,
-        threads,
-        topLevel: new Set([key("shelved"), key("fork")]),
-      }).childrenByKey.get(key("shelved")),
-    ).toHaveLength(2);
+    const nestedWith = (
+      placed: ReadonlyArray<string>,
+      sections: Readonly<Record<string, string>>,
+    ) =>
+      [
+        ...buildSidebarLineageForest({
+          candidates: threads,
+          threads,
+          placement: {
+            placed: new Set(placed.map(key)),
+            sectionOf: new Map(Object.entries(sections).map(([id, section]) => [key(id), section])),
+          },
+        }).nested,
+      ].toSorted();
+    expect(nestedWith(["fork"], { parent: "settled", fork: "active" })).toEqual([
+      key("fork-worker"),
+    ]);
+    expect(nestedWith(["parent", "fork"], { parent: "settled", fork: "active" })).toEqual([
+      key("fork-worker"),
+      key("worker"),
+    ]);
+    expect(nestedWith(["parent", "fork"], { parent: "active", fork: "active" })).toEqual([
+      key("fork"),
+      key("fork-worker"),
+      key("worker"),
+    ]);
   });
 
   it("attaches past ancestors that cannot render", () => {
