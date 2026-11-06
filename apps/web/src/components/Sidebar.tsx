@@ -599,6 +599,8 @@ function useSidebarThreads(input: {
         : [],
     ),
     // An open child the shell left out loads with its family, so its parent row can stand for it.
+    // Keyed by the route's own id: switching to the root once loaded would release the rows
+    // that made it present and loop.
     ...(input.routeThreadRef !== null &&
     (routeThread === undefined || routeThread.lineage.parentThreadId !== null)
       ? [input.routeThreadRef]
