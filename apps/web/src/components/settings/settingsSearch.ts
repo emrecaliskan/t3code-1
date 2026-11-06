@@ -708,6 +708,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["enter return command ctrl multiline prompt new line composer"],
   },
   {
+    id: "quick-replies",
+    title: "Quick replies",
+    to: "/settings/chat",
+    searchTerms: ["chips canned saved prompts shortcuts composer skill send"],
+  },
+  {
     id: "follow-up-behavior",
     title: "Follow-up behavior",
     to: "/settings/chat",

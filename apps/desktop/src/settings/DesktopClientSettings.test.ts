@@ -66,6 +66,7 @@ const clientSettings: ClientSettings = {
   boringSidebarEnabled: false,
   boringSidebarMultilineRows: false,
   compactSidebarRows: false,
+  quickReplies: ["Ship it"],
   threadDetailsUsageEnabled: false,
   threadDetailsItems: {},
   legacySidebarEnabled: false,

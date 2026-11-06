@@ -346,3 +346,15 @@ export function extendReplacementRangeForTrailingSpace(
 }
 
 export { replaceTextRange } from "@t3tools/shared/composerTrigger";
+
+/** An empty composer sends the reply; a draft gets it on a new line to finish by hand. */
+export function applyQuickReply(
+  prompt: string,
+  reply: string,
+  draftHasOtherContent: boolean,
+): { readonly prompt: string; readonly send: boolean } {
+  const draftText = prompt.trimEnd();
+  if (draftText.length === 0 && !draftHasOtherContent) return { prompt: reply, send: true };
+  // The trailing space lets a `$skill` reply render as a chip, as the slash menu leaves it.
+  return { prompt: `${draftText}${draftText ? "\n" : ""}${reply} `, send: false };
+}

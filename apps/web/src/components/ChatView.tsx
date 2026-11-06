@@ -499,6 +499,7 @@ export default function ChatView(props: ChatViewProps) {
         });
   const promptRef = useRef("");
   const localComposerRef = useRef<ChatComposerHandle | null>(null);
+  const [quickRepliesHost, setQuickRepliesHost] = useState<HTMLDivElement | null>(null);
   const composerRef = useComposerHandleContext() ?? localComposerRef;
   const queuedRunEdit = useQueuedRunEdit({
     environmentId,
@@ -3576,6 +3577,7 @@ export default function ChatView(props: ChatViewProps) {
                         : undefined
                     }
                   >
+                    {isDraftHeroState ? null : <div ref={setQuickRepliesHost} />}
                     <ChildThreadApprovals threadRef={activeThreadRef} />
                     <div className="relative">
                       <ComposerSurface.Shell contextRow={showComposerContextStrip}>
@@ -3735,6 +3737,7 @@ export default function ChatView(props: ChatViewProps) {
                                   (activeThreadShell ?? activeThread)?.pullRequests
                                 }
                                 onComposerOverlayHeightChange={publishComposerOverlayHeightStable}
+                                quickRepliesHost={quickRepliesHost}
                                 permissionsShownInStrip={
                                   showComposerContextStrip && !isServerThread
                                 }

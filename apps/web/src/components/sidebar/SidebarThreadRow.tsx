@@ -46,7 +46,7 @@ import {
   PinIcon,
   PinOffIcon,
   ShieldQuestionIcon,
-  SparklesIcon,
+  CornerDownRightIcon,
   SquarePenIcon,
   TerminalIcon,
   Undo2Icon,
@@ -251,9 +251,9 @@ function SidebarProviderStack(props: {
 }
 
 const LINEAGE_KIND: Record<SidebarLineageKind, { Icon: LucideIcon; label: string }> = {
-  worker: { Icon: BotIcon, label: "T3 worker" },
-  // Stands in when the row's provider is unknown.
-  providerSubagent: { Icon: SparklesIcon, label: "Subagent" },
+  worker: { Icon: BotIcon, label: "Worker" },
+  // Not the provider logo: elsewhere that logo means "runs on this provider".
+  providerSubagent: { Icon: CornerDownRightIcon, label: "Subagent" },
   fork: { Icon: GitForkIcon, label: "Fork" },
 };
 
@@ -263,27 +263,9 @@ function lineageKindLabel(kind: SidebarLineageKind, providerEntry: SidebarProvid
     : LINEAGE_KIND[kind].label;
 }
 
-function LineageKindIcon(props: {
-  kind: SidebarLineageKind;
-  providerEntry: SidebarProviderEntry | null;
-  className: string;
-  /** Tones the lucide glyphs; provider icons keep their own colours. */
-  glyphClassName: string;
-}) {
-  const { kind, providerEntry } = props;
-  if (kind === "providerSubagent" && providerEntry !== null) {
-    return (
-      <ProviderInstanceIcon
-        driverKind={providerEntry.driverKind}
-        displayName={providerEntry.displayName}
-        acpRegistryAgentId={providerEntry.acpRegistryAgentId}
-        acpRegistryIconUrl={providerEntry.acpRegistryIconUrl}
-        iconClassName={props.className}
-      />
-    );
-  }
-  const { Icon } = LINEAGE_KIND[kind];
-  return <Icon aria-hidden className={cn(props.className, props.glyphClassName)} />;
+function LineageKindIcon(props: { kind: SidebarLineageKind; className: string }) {
+  const { Icon } = LINEAGE_KIND[props.kind];
+  return <Icon aria-hidden className={props.className} />;
 }
 
 function SidebarThreadTooltip({
@@ -343,9 +325,7 @@ function SidebarThreadTooltip({
           <div className="flex min-w-0 items-center gap-2">
             <LineageKindIcon
               kind={lineage.kind}
-              providerEntry={providerEntry}
-              className="size-3 shrink-0"
-              glyphClassName="stroke-muted-foreground"
+              className="size-3 shrink-0 stroke-muted-foreground"
             />
             <div className="min-w-0 truncate text-foreground/75">
               {lineage.parentTitle === undefined
@@ -1530,9 +1510,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     lineageKind === null ? null : (
       <LineageKindIcon
         kind={lineageKind}
-        providerEntry={providerEntry}
-        className="size-4 shrink-0"
-        glyphClassName="text-sidebar-muted-foreground"
+        className="size-4 shrink-0 text-sidebar-muted-foreground"
       />
     );
   const accessibleTitle = isRenaming ? null : <span className="sr-only">{rowTitle}</span>;

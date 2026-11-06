@@ -78,6 +78,7 @@ import { DraftInput } from "../ui/draft-input";
 import { Input } from "../ui/input";
 import { Select, SelectItem, SelectPopup, SelectTrigger, SelectValue } from "../ui/select";
 import { Switch } from "../ui/switch";
+import { Textarea } from "../ui/textarea";
 import { ScopedSwitch } from "./ScopedSwitch";
 import { stackedThreadToast, toastManager } from "../ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
@@ -525,6 +526,9 @@ export function useSettingsRestore(onRestored?: () => void) {
       ? ["Rich text composer"]
       : []),
     ...(settings.sendShortcut !== DEFAULT_UNIFIED_SETTINGS.sendShortcut ? ["Send shortcut"] : []),
+    ...(!Equal.equals(settings.quickReplies, DEFAULT_UNIFIED_SETTINGS.quickReplies)
+      ? ["Quick replies"]
+      : []),
     ...(settings.followUpBehavior !== DEFAULT_UNIFIED_SETTINGS.followUpBehavior
       ? ["Follow-up behavior"]
       : []),
@@ -644,6 +648,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       showSkillsInSlashMenu: DEFAULT_UNIFIED_SETTINGS.showSkillsInSlashMenu,
       composerRichTextEnabled: DEFAULT_UNIFIED_SETTINGS.composerRichTextEnabled,
       sendShortcut: DEFAULT_UNIFIED_SETTINGS.sendShortcut,
+      quickReplies: DEFAULT_UNIFIED_SETTINGS.quickReplies,
       followUpBehavior: DEFAULT_UNIFIED_SETTINGS.followUpBehavior,
       contextWindowMeterEnabled: DEFAULT_UNIFIED_SETTINGS.contextWindowMeterEnabled,
       environmentIdentificationMode: DEFAULT_UNIFIED_SETTINGS.environmentIdentificationMode,
@@ -1161,6 +1166,7 @@ export function ChatSettingsPanel() {
             </Select>
           }
         />
+        <QuickRepliesSettingsRow />
         <AdvancedSettings targetIds={[searchableSetting("skills-in-slash-menu").id]}>
           <SettingsRow
             {...searchableSetting("skills-in-slash-menu")}
@@ -1234,6 +1240,44 @@ export function ChatSettingsPanel() {
         />
       </SettingsSection>
     </SettingsPageContainer>
+  );
+}
+
+function QuickRepliesSettingsRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  const text = settings.quickReplies.join("\n");
+  return (
+    <SettingsRow
+      {...searchableSetting("quick-replies")}
+      description="Shown above the composer, one per line. A click sends the reply, or adds it to your draft. Start a line with $ to run a skill."
+      resetAction={
+        !Equal.equals(settings.quickReplies, DEFAULT_UNIFIED_SETTINGS.quickReplies) ? (
+          <SettingResetButton
+            label="quick replies"
+            onClick={() => updateSettings({ quickReplies: DEFAULT_UNIFIED_SETTINGS.quickReplies })}
+          />
+        ) : null
+      }
+    >
+      <div className="mt-3 max-w-2xl pb-3.5">
+        <Textarea
+          key={text}
+          aria-label="Quick replies"
+          rows={4}
+          spellCheck={false}
+          defaultValue={text}
+          placeholder="What do you need from me?"
+          onBlur={(event) => {
+            const quickReplies = event.target.value
+              .split("\n")
+              .map((line) => line.trim())
+              .filter((line) => line.length > 0);
+            if (quickReplies.join("\n") !== text) updateSettings({ quickReplies });
+          }}
+        />
+      </div>
+    </SettingsRow>
   );
 }
 

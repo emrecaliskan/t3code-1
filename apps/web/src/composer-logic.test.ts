@@ -13,6 +13,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  applyQuickReply,
   clampCollapsedComposerCursor,
   collapseExpandedComposerCursor,
   composerSubmissionIntentForKey,
@@ -538,6 +539,18 @@ describe("literal editor answer cursor state", () => {
       });
     }
     expect(composerStateAtPromptEnd("Use $my").trigger?.kind).toBe("skill");
+  });
+});
+
+describe("applyQuickReply", () => {
+  it.each([
+    ["", false, { prompt: "$pstack:bro", send: true }],
+    ["  \n", false, { prompt: "$pstack:bro", send: true }],
+    ["", true, { prompt: "$pstack:bro ", send: false }],
+    ["Check the tests", false, { prompt: "Check the tests\n$pstack:bro ", send: false }],
+    ["Check the tests \n", false, { prompt: "Check the tests\n$pstack:bro ", send: false }],
+  ])("from %j with other draft content %s", (prompt, draftHasOtherContent, expected) => {
+    expect(applyQuickReply(prompt, "$pstack:bro", draftHasOtherContent)).toEqual(expected);
   });
 });
 

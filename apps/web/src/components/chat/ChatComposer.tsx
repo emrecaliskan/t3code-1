@@ -1,4 +1,5 @@
 import { VoiceInputSetup } from "./VoiceInputSetup";
+import { ComposerQuickReplies } from "./ComposerQuickReplies";
 import { useComposerTypingGuard } from "./useComposerTypingGuard";
 import { insertAttachmentReferencesForDraft } from "./composerAttachmentReferences";
 import { DESKTOP_PASTE_AS_TEXT_EVENT } from "../../lib/desktopPasteAsText";
@@ -65,8 +66,9 @@ import {
   useRef,
   useState,
 } from "react";
-import { flushSync } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import {
+  applyQuickReply,
   clampCollapsedComposerCursor,
   type ComposerTrigger,
   type ComposerSubmissionIntent,
@@ -451,6 +453,8 @@ export interface ChatComposerProps {
   pullRequestRepository: string | null;
   threadPullRequests: ReadonlyArray<ThreadPullRequestLink> | undefined;
   onComposerOverlayHeightChange: (height: number) => void;
+  /** Where the quick replies render, above the composer card; `null` hides them. */
+  quickRepliesHost: HTMLElement | null;
   /** The new-thread strip names the permissions, so the controls row hides its chip. */
   permissionsShownInStrip: boolean;
 
@@ -577,6 +581,7 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     pullRequestRepository,
     threadPullRequests,
     onComposerOverlayHeightChange,
+    quickRepliesHost,
     promptRef,
     composerRef,
     composerImagesRef,
@@ -2307,6 +2312,27 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
     });
   };
   const expandMobileComposerStable = useStableCallback(expandMobileComposer);
+  const selectQuickReply = (reply: string) => {
+    const next = applyQuickReply(
+      promptRef.current,
+      reply,
+      composerDraftHasUserContent(composerDraft ? { ...composerDraft, prompt: "" } : null),
+    );
+    if (!applyPromptReplacement(0, promptRef.current.length, next.prompt)) return;
+    if (next.send) submitComposer();
+    else if (isComposerCollapsedMobile) expandMobileComposer();
+  };
+  const selectQuickReplyStable = useStableCallback(selectQuickReply);
+  // A send would decline the open approval or answer the open question, so neither takes a chip.
+  const quickRepliesDisabled =
+    isComposerApprovalState ||
+    activePendingUserInput !== null ||
+    !canOperateThread ||
+    isSendBusy ||
+    voiceSendDisabledReason !== null ||
+    environmentUnavailable !== null ||
+    noProviderAvailable ||
+    projectSelectionRequired;
 
   const onComposerCommandKey = (key: string, event: KeyboardEvent, isTaskItem?: boolean) =>
     composerCommandKeyHandler({
@@ -3297,6 +3323,16 @@ export const ChatComposer = memo(function ChatComposer(props: ChatComposerProps)
       data-chat-composer-form="true"
       {...threadContextDropTargetProps()}
     >
+      {quickRepliesHost !== null && settings.quickReplies.length > 0
+        ? createPortal(
+            <ComposerQuickReplies
+              replies={settings.quickReplies}
+              disabled={quickRepliesDisabled}
+              onSelect={selectQuickReplyStable}
+            />,
+            quickRepliesHost,
+          )
+        : null}
       <ComposerBanner.Dock>
         <ComposerBanner.Column>
           <ComposerBannerStack items={shelfItems} />

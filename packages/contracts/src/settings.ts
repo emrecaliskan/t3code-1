@@ -372,6 +372,13 @@ export const VoiceTranscriptionDestination = Schema.Struct({
 });
 export type VoiceTranscriptionDestination = typeof VoiceTranscriptionDestination.Type;
 
+/** Prompts the composer offers above its input; `$name` is a skill, as the slash menu inserts it. */
+export const QuickReplies = Schema.Array(Schema.String);
+const DEFAULT_QUICK_REPLIES: typeof QuickReplies.Type = [
+  "$pstack:bro",
+  "What do you need from me?",
+];
+
 export const ClientSettingsSchema = Schema.Struct({
   notificationMode: NotificationMode.pipe(
     Schema.withDecodingDefault(Effect.succeed("off" as const)),
@@ -503,6 +510,9 @@ export const ClientSettingsSchema = Schema.Struct({
     Schema.withDecodingDefault(Effect.succeed(false)),
   ),
   compactSidebarRows: Schema.Boolean.pipe(Schema.withDecodingDefault(Effect.succeed(false))),
+  quickReplies: QuickReplies.pipe(
+    Schema.withDecodingDefault(Effect.succeed(DEFAULT_QUICK_REPLIES)),
+  ),
   toolCallVisibility: ToolCallVisibility.pipe(
     Schema.withDecodingDefault(Effect.succeed("showAll" as const)),
   ),
@@ -1885,6 +1895,7 @@ export const ClientSettingsPatch = Schema.Struct({
   boringSidebarEnabled: Schema.optionalKey(Schema.Boolean),
   boringSidebarMultilineRows: Schema.optionalKey(Schema.Boolean),
   compactSidebarRows: Schema.optionalKey(Schema.Boolean),
+  quickReplies: Schema.optionalKey(QuickReplies),
   toolCallVisibility: Schema.optionalKey(ToolCallVisibility),
   threadDetailsUsageEnabled: Schema.optionalKey(Schema.Boolean),
   threadDetailsItems: Schema.optionalKey(Schema.Record(Schema.String, Schema.Boolean)),

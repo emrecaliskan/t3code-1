@@ -173,6 +173,16 @@ This removes the selected message and later conversation from the active thread
 and provider history. It does not undo external actions or separate provider
 memory. The action is available only when the provider supports rewind.
 
+## Quick replies
+
+On web and desktop, quick replies sit above the composer in a thread. With an empty composer, a
+quick reply sends at once, as if you typed it and pressed Enter, so it queues or steers while the
+agent works. When the composer holds a draft, the reply goes on a new line of that draft instead,
+and nothing is sent.
+
+Edit the list in **Settings → Chat → Quick replies**, one reply per line. Write a skill the way you
+type it in the composer, such as `$pstack:bro`. Remove every line to hide quick replies.
+
 ## Prompt stash
 
 On web and desktop, press `Cmd+S` on macOS or `Ctrl+S` on Windows and Linux to save
