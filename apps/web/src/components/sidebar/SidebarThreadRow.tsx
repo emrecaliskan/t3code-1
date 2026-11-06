@@ -134,7 +134,7 @@ import { useThreadHasUnsentDraft } from "../../composerDraftStore";
 import {
   sidebarLineageKind,
   sidebarLineageRowTitle,
-  type SidebarLineageFinishedGroupRow,
+  type SidebarLineageGroupRow,
   type SidebarLineageKind,
 } from "./sidebarLineage";
 
@@ -600,7 +600,7 @@ export function NestedThreadRow(props: SortableThreadRowProps) {
 
 // In `--spacing` units. One level sits a child's glyph clear of its parent's rail.
 const LINEAGE_INDENT = 5;
-// Half the size-4 favicon, so rails run under the glyph's centre.
+// Half a size-4 glyph, the favicon or a nested title's leading emoji, so rails run under its centre.
 const LINEAGE_GLYPH_HALF = 2;
 const LINEAGE_GLYPH_GAP = 0.5;
 const lineageSpacing = (units: number) => `calc(var(--spacing) * ${units})`;
@@ -664,11 +664,30 @@ function LineageGuides(props: {
     </span>
   );
 }
-/** Folds a parent's finished children into one row that opens like a parent row. */
-export function SidebarFinishedGroupRow(props: {
-  row: SidebarLineageFinishedGroupRow;
+function lineageGroupLabel(
+  row: SidebarLineageGroupRow<SidebarThreadSummary>,
+  providerEntryByInstanceId: ReadonlyMap<string, SidebarProviderEntry>,
+): string {
+  const count = row.threads.length;
+  if (row.group === "idle") return `${count} idle`;
+  const instanceIds = new Set(
+    row.threads.map(
+      (thread) => thread.runtime?.providerInstanceId ?? thread.modelSelection.instanceId,
+    ),
+  );
+  const [onlyInstanceId] = instanceIds.size === 1 ? instanceIds : [];
+  const provider =
+    onlyInstanceId === undefined ? undefined : providerEntryByInstanceId.get(onlyInstanceId);
+  const noun = count === 1 ? "subagent" : "subagents";
+  return provider === undefined ? `${count} ${noun}` : `${count} ${provider.displayName} ${noun}`;
+}
+
+/** Folds some of a parent's children into one row that opens like a parent row. */
+export function SidebarGroupRow(props: {
+  row: SidebarLineageGroupRow<SidebarThreadSummary>;
   /** Its siblings' variant, so the guides line up with theirs. */
   variant: SidebarThreadRowVariant;
+  providerEntryByInstanceId: ReadonlyMap<string, SidebarProviderEntry>;
   onToggle: (key: string, expanded: boolean) => void;
 }) {
   const { row, variant, onToggle } = props;
@@ -703,7 +722,7 @@ export function SidebarFinishedGroupRow(props: {
         <span className="inline-flex size-4 shrink-0 items-center justify-center">
           <ChevronDownIcon aria-hidden className={cn("size-3", !row.expanded && "-rotate-90")} />
         </span>
-        {row.count} idle
+        {lineageGroupLabel(row, props.providerEntryByInstanceId)}
       </div>
     </li>
   );
@@ -1183,7 +1202,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     ? getTriggerDisplayModelName(selectedModel, providerEntry?.driverKind)
     : thread.modelSelection.model;
   const lineageDepth = props.lineageDepth ?? 0;
-  // A nested row's kind replaces its favicon, which only repeats its parent's project.
   const lineageKind = lineageDepth > 0 ? sidebarLineageKind(thread.source) : null;
 
   const isRemote = thread.environmentId !== props.currentEnvironmentId;
@@ -1478,7 +1496,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       aria-hidden
       className={cn(
         "min-w-0 text-start text-sm transition-opacity motion-reduce:transition-none",
-        props.lineageExpanded == null && titlePullRequest === null ? "flex-1" : "flex-initial",
+        props.lineageExpanded == null && titlePullRequest === null && lineageKind !== "fork"
+          ? "flex-1"
+          : "flex-initial",
         titleRecedes ? "font-normal" : "font-medium",
         variant === "card" || !ONE_LINE_ROW_LAYOUT[variant].quiet
           ? cn(
@@ -1506,13 +1526,18 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       {rowTitle}
     </span>
   );
-  const lineageKindIcon =
-    lineageKind === null ? null : (
-      <LineageKindIcon
-        kind={lineageKind}
-        className="size-4 shrink-0 text-sidebar-muted-foreground"
-      />
-    );
+  const forkTag =
+    lineageKind === "fork" ? (
+      <span
+        aria-hidden
+        className={cn(
+          "shrink-0 text-2xs text-sidebar-muted-foreground",
+          lineageToggle === null && "me-auto",
+        )}
+      >
+        fork
+      </span>
+    ) : null;
   const accessibleTitle = isRenaming ? null : <span className="sr-only">{rowTitle}</span>;
 
   const handlePrListClick = () => {
@@ -1702,7 +1727,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             {/* `contents` keeps one-line rows a single flex row. */}
             <div className={layout.twoLines ? "flex h-6 min-w-0 items-center gap-2.5" : "contents"}>
               {accessibleTitle}
-              {layout.inFolder && lineageKindIcon === null ? null : (
+              {/* A nested row's favicon would only repeat its parent's project. */}
+              {layout.inFolder || lineageDepth > 0 ? null : (
                 <span
                   className={cn(
                     "flex shrink-0 items-center transition-opacity",
@@ -1711,14 +1737,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       "opacity-40 grayscale group-focus-within/sidebar-row:opacity-100 group-focus-within/sidebar-row:grayscale-0 group-hover/sidebar-row:opacity-100 group-hover/sidebar-row:grayscale-0",
                   )}
                 >
-                  {lineageKindIcon ??
-                    (props.project ? (
-                      <ProjectFavicon project={props.project} className="size-4" />
-                    ) : null)}
+                  {props.project ? (
+                    <ProjectFavicon project={props.project} className="size-4" />
+                  ) : null}
                 </span>
               )}
               {draftIndicator}
               {title}
+              {forkTag}
               {lineageToggle}
               {titlePullRequest === null ? null : (
                 // Grows in the title's place, so the title truncates first and the chip stays beside it.
@@ -1913,10 +1939,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           >
             <div className="flex h-5 min-w-0 items-center gap-1.5">
               {draftIndicator}
-              {lineageKindIcon ??
-                (props.project ? (
-                  <ProjectFavicon project={props.project} className="size-4 shrink-0" />
-                ) : null)}
+              {lineageDepth === 0 && props.project ? (
+                <ProjectFavicon project={props.project} className="size-4 shrink-0" />
+              ) : null}
               {/* Left of the status slot, the pin would slide when hover swaps the
                 label for the wider row controls. */}
               {pinIndicator}
@@ -2064,6 +2089,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             </div>
             <div className="mt-1 flex min-w-0 items-center gap-1.5">
               {title}
+              {forkTag}
               {lineageToggle}
               {isRegeneratingTitle ? (
                 <span role="status" className="sr-only">

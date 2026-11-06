@@ -272,7 +272,7 @@ import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
 import {
   SidebarSearchResultRow,
   NestedThreadRow,
-  SidebarFinishedGroupRow,
+  SidebarGroupRow,
   SortableThreadRow,
   type SidebarProviderEntry,
   type SidebarSweepAction,
@@ -3507,7 +3507,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           scopeThreadRef(thread.environmentId, thread.id),
                         );
                         const nestedRows = nestedRowsByTopKey.get(threadKey) ?? EMPTY_LINEAGE_ROWS;
-                        // A settled group hands its parent's title on to the rows it holds.
+                        // A group hands its parent's title on to the rows it holds.
                         const familyTitleByKey = new Map([[threadKey, thread.title]]);
                         for (const row of nestedRows) {
                           const title =
@@ -3519,11 +3519,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         return [
                           renderThreadTreeRow(thread, section, folderRow),
                           ...nestedRows.map((row) =>
-                            row.kind === "finishedGroup" ? (
-                              <SidebarFinishedGroupRow
+                            row.kind === "group" ? (
+                              <SidebarGroupRow
                                 key={row.key}
                                 row={row}
                                 variant={rowVariantFor(section, folderRow)}
+                                providerEntryByInstanceId={
+                                  providerEntriesByEnvironment.get(thread.environmentId) ??
+                                  EMPTY_PROVIDER_ENTRIES
+                                }
                                 onToggle={setThreadLineageExpanded}
                               />
                             ) : (

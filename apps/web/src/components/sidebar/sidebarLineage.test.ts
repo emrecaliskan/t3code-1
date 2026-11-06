@@ -9,7 +9,7 @@ import {
   sidebarLineageKind,
   sidebarLineageRowTitle,
   sidebarLineageTopKey,
-  sidebarFinishedGroupKey,
+  sidebarLineageGroupKey,
   type SidebarLineageRow,
   type SidebarLineageThread,
 } from "./sidebarLineage";
@@ -25,6 +25,7 @@ function thread(
     readonly sideChat?: boolean;
     readonly createdAt?: string;
     readonly live?: boolean;
+    readonly provider?: boolean;
   } = {},
 ): SidebarLineageThread {
   return {
@@ -43,13 +44,14 @@ function thread(
       status: "completed",
       pendingRuntimeRequest: null,
       pendingBackgroundTasks: [],
+      creationSource: options.provider ? "provider" : "web",
     },
   } as SidebarLineageThread;
 }
 
 const key = (id: string) => `${environmentId}:${id}`;
 const label = (row: SidebarLineageRow<SidebarLineageThread>) =>
-  row.kind === "thread" ? row.thread.id : `${row.count} finished`;
+  row.kind === "thread" ? row.thread.id : `${row.threads.length} ${row.group}`;
 
 function tree(
   threads: ReadonlyArray<SidebarLineageThread>,
@@ -253,7 +255,7 @@ describe("flattenSidebarLineage", () => {
     ]);
   });
 
-  it("draws guides that continue past every child but the last, the finished group", () => {
+  it("draws guides that continue past every child but the last, the idle group", () => {
     const threads = [
       thread("root"),
       thread("first", { parent: "root", createdAt: "2026-01-02T00:00:00.000Z" }),
@@ -262,7 +264,7 @@ describe("flattenSidebarLineage", () => {
       thread("done", { parent: "root", createdAt: "2026-01-04T00:00:00.000Z" }),
     ];
     const allOpen = Object.fromEntries(
-      [...threads.map((entry) => key(entry.id)), sidebarFinishedGroupKey(key("root"))].map(
+      [...threads.map((entry) => key(entry.id)), sidebarLineageGroupKey(key("root"), "idle")].map(
         (rowKey) => [rowKey, true],
       ),
     );
@@ -277,8 +279,8 @@ describe("flattenSidebarLineage", () => {
       ["first", key("root"), [true]],
       ["nested", key("first"), [true, false]],
       ["last", key("root"), [true]],
-      ["1 finished", key("root"), [false]],
-      ["done", sidebarFinishedGroupKey(key("root")), [false, false]],
+      ["1 idle", key("root"), [false]],
+      ["done", sidebarLineageGroupKey(key("root"), "idle"), [false, false]],
     ]);
   });
 
@@ -299,13 +301,13 @@ describe("flattenSidebarLineage", () => {
       "    late-worker",
     ]);
     const finished = ["early", "late"];
-    expect(tree(threads, { expanded, finished }).shape).toEqual(["root", "  open", "  2 finished"]);
+    expect(tree(threads, { expanded, finished }).shape).toEqual(["root", "  open", "  2 idle"]);
     expect(
       tree(threads, {
-        expanded: { ...expanded, [sidebarFinishedGroupKey(key("root"))]: true },
+        expanded: { ...expanded, [sidebarLineageGroupKey(key("root"), "idle")]: true },
         finished,
       }).shape,
-    ).toEqual(["root", "  open", "  2 finished", "    early", "    late", "      late-worker"]);
+    ).toEqual(["root", "  open", "  2 idle", "    early", "    late", "      late-worker"]);
   });
 
   it("keeps the open thread's line and finished work with a live descendant unfolded", () => {
@@ -323,7 +325,66 @@ describe("flattenSidebarLineage", () => {
         finished: ["done", "waiting", "viewed", "route"],
         route: "route",
       }).shape,
-    ).toEqual(["root", "  waiting", "    running", "  viewed", "    route", "  1 finished"]);
+    ).toEqual(["root", "  waiting", "    running", "  viewed", "    route", "  1 idle"]);
+  });
+
+  it("folds every provider subagent into a group between the other children and the idle group", () => {
+    const at = (day: number) => `2026-01-0${day}T00:00:00.000Z`;
+    const threads = [
+      thread("root"),
+      thread("worker", { parent: "root", createdAt: at(2) }),
+      thread("sub-early", { parent: "root", provider: true, createdAt: at(3) }),
+      thread("done", { parent: "root", createdAt: at(4) }),
+      thread("sub-late", { parent: "root", provider: true, createdAt: at(5) }),
+      thread("fork", { parent: "root", relationship: "fork", createdAt: at(6) }),
+      thread("sub-live", { parent: "root", provider: true, live: true, createdAt: at(7) }),
+      thread("sub-child", { parent: "sub-late", root: "root" }),
+    ];
+    const finished = ["sub-early", "done", "sub-late"];
+    const subagentsKey = `${key("root")}:subagents`;
+    expect(tree(threads, { finished }).shape).toEqual([
+      "root",
+      "  worker",
+      "  fork",
+      "  3 subagents",
+      "  1 idle",
+    ]);
+    const { rows } = tree(threads, {
+      finished,
+      expanded: { [subagentsKey]: true, [key("sub-late")]: true },
+    });
+    expect(rows.map((row) => [label(row), row.key, row.parentKey, row.guides])).toEqual([
+      ["root", key("root"), null, []],
+      ["worker", key("worker"), key("root"), [true]],
+      ["fork", key("fork"), key("root"), [true]],
+      ["3 subagents", subagentsKey, key("root"), [true]],
+      ["sub-early", key("sub-early"), subagentsKey, [true, true]],
+      ["sub-late", key("sub-late"), subagentsKey, [true, true]],
+      ["sub-child", key("sub-child"), key("sub-late"), [true, true, false]],
+      ["sub-live", key("sub-live"), subagentsKey, [true, false]],
+      ["1 idle", `${key("root")}:idle`, key("root"), [false]],
+    ]);
+  });
+
+  it("keeps a provider subagent on the open thread's line outside its group", () => {
+    const threads = [
+      thread("root"),
+      thread("sub-a", { parent: "root", provider: true, createdAt: "2026-01-02T00:00:00.000Z" }),
+      thread("deep", { parent: "sub-a", root: "root" }),
+      thread("sub-b", { parent: "root", provider: true, createdAt: "2026-01-03T00:00:00.000Z" }),
+    ];
+    const expanded = { [key("root")]: true, [key("sub-a")]: true };
+    expect(tree(threads, { expanded, route: "deep" }).shape).toEqual([
+      "root",
+      "  sub-a",
+      "    deep",
+      "  1 subagents",
+    ]);
+    expect(tree(threads, { expanded, route: "sub-b" }).shape).toEqual([
+      "root",
+      "  sub-b",
+      "  1 subagents",
+    ]);
   });
 });
 

@@ -11,7 +11,8 @@ export type SidebarLineageThread = Pick<
   EnvironmentThreadShell,
   "environmentId" | "id" | "lineage" | "createdAt"
 > & {
-  readonly source: Parameters<typeof isLiveSubagentShell>[0];
+  readonly source: Parameters<typeof isLiveSubagentShell>[0] &
+    Pick<Parameters<typeof isProviderNativeSubagentThread>[0], "creationSource">;
 };
 
 /** How a nested row came from its parent: a T3 worker, a provider's own subagent, or a fork. */
@@ -40,7 +41,7 @@ export interface SidebarLineageForest<T> {
 }
 
 /** A visible row under the sidebar's top-level threads, in render order. */
-export type SidebarLineageRow<T> = SidebarLineageThreadRow<T> | SidebarLineageFinishedGroupRow;
+export type SidebarLineageRow<T> = SidebarLineageThreadRow<T> | SidebarLineageGroupRow<T>;
 
 interface SidebarLineageRowPlacement {
   readonly key: string;
@@ -55,23 +56,33 @@ interface SidebarLineageRowPlacement {
 export interface SidebarLineageThreadRow<T> extends SidebarLineageRowPlacement {
   readonly kind: "thread";
   readonly thread: T;
-  /** The row this one sits under: its parent thread, or the finished group that holds it. */
+  /** The row this one sits under: its parent thread, or the group that holds it. */
   readonly parentKey: string | null;
   /** Known children, or idle subagents the shell left out. */
   readonly expandable: boolean;
   readonly expanded: boolean;
 }
 
-/** The last row under a parent, holding its finished children. */
-export interface SidebarLineageFinishedGroupRow extends SidebarLineageRowPlacement {
-  readonly kind: "finishedGroup";
+/**
+ * Which children a group row folds, in the order the groups follow a parent's unfolded children:
+ * every provider subagent, then the other finished children.
+ */
+const SIDEBAR_LINEAGE_GROUPS = ["subagents", "idle"] as const;
+export type SidebarLineageGroup = (typeof SIDEBAR_LINEAGE_GROUPS)[number];
+
+/** A row under a parent that holds some of its children and opens like a parent row. */
+export interface SidebarLineageGroupRow<T> extends SidebarLineageRowPlacement {
+  readonly kind: "group";
+  readonly group: SidebarLineageGroup;
   readonly parentKey: string;
-  readonly count: number;
+  /** In launch order. */
+  readonly threads: ReadonlyArray<T>;
   readonly expanded: boolean;
 }
 
-/** The finished group's row key, which also keys its open state. */
-export const sidebarFinishedGroupKey = (parentKey: string) => `${parentKey}:finished`;
+/** A group's row key, which also keys its open state. */
+export const sidebarLineageGroupKey = (parentKey: string, group: SidebarLineageGroup) =>
+  `${parentKey}:${group}`;
 
 const keyOf = (thread: Pick<SidebarLineageThread, "environmentId" | "id">) =>
   scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
@@ -196,8 +207,9 @@ export function sidebarLineageDescendants<T extends SidebarLineageThread>(
 
 /**
  * The visible rows under `roots`, in order. A parent the user never toggled starts open while any
- * descendant is live. Finished children fold into one closed group after the others, except one on
- * the way to `routeKey` or with a live descendant.
+ * descendant is live. After a parent's other children, closed groups fold its provider subagents,
+ * then its other finished children unless live work sits below them. A child on the way to
+ * `routeKey` never folds.
  */
 export function flattenSidebarLineage<T extends SidebarLineageThread>(input: {
   readonly roots: ReadonlyArray<T>;
@@ -228,14 +240,17 @@ export function flattenSidebarLineage<T extends SidebarLineageThread>(input: {
   ) {
     onRoute.add(key);
   }
-  const folds = (child: T) => {
+  const groupOf = (child: T): SidebarLineageGroup | null => {
     const key = keyOf(child);
-    return (
-      isFinished(child) &&
-      !onRoute.has(key) &&
-      !isLiveSubagentShell(child.source) &&
-      !hasLiveDescendant(key)
-    );
+    if (onRoute.has(key)) return null;
+    const kind = sidebarLineageKind({
+      lineage: child.lineage,
+      creationSource: child.source.creationSource,
+    });
+    if (kind === "providerSubagent") return "subagents";
+    return isFinished(child) && !isLiveSubagentShell(child.source) && !hasLiveDescendant(key)
+      ? "idle"
+      : null;
   };
 
   const rows: SidebarLineageRow<T>[] = [];
@@ -256,28 +271,35 @@ export function flattenSidebarLineage<T extends SidebarLineageThread>(input: {
     });
     if (!expanded) return;
     const open: T[] = [];
-    const finished: T[] = [];
-    for (const child of children) (folds(child) ? finished : open).push(child);
+    const folded: Record<SidebarLineageGroup, T[]> = { subagents: [], idle: [] };
+    for (const child of children) {
+      const group = groupOf(child);
+      (group === null ? open : folded[group]).push(child);
+    }
+    const groups = SIDEBAR_LINEAGE_GROUPS.filter((group) => folded[group].length > 0);
     open.forEach((child, index) =>
-      visit(child, key, [...guides, finished.length > 0 || index < open.length - 1]),
+      visit(child, key, [...guides, groups.length > 0 || index < open.length - 1]),
     );
-    if (finished.length === 0) return;
-    const groupKey = sidebarFinishedGroupKey(key);
-    const groupGuides = [...guides, false];
-    const groupExpanded = expandedByKey[groupKey] ?? false;
-    rows.push({
-      kind: "finishedGroup",
-      key: groupKey,
-      depth: groupGuides.length,
-      parentKey: key,
-      count: finished.length,
-      expanded: groupExpanded,
-      guides: groupGuides,
+    groups.forEach((group, groupIndex) => {
+      const members = folded[group];
+      const groupKey = sidebarLineageGroupKey(key, group);
+      const groupGuides = [...guides, groupIndex < groups.length - 1];
+      const groupExpanded = expandedByKey[groupKey] ?? false;
+      rows.push({
+        kind: "group",
+        group,
+        key: groupKey,
+        depth: groupGuides.length,
+        parentKey: key,
+        threads: members,
+        expanded: groupExpanded,
+        guides: groupGuides,
+      });
+      if (!groupExpanded) return;
+      members.forEach((child, index) =>
+        visit(child, groupKey, [...groupGuides, index < members.length - 1]),
+      );
     });
-    if (!groupExpanded) return;
-    finished.forEach((child, index) =>
-      visit(child, groupKey, [...groupGuides, index < finished.length - 1]),
-    );
   };
   for (const root of input.roots) visit(root, null, []);
   return rows;

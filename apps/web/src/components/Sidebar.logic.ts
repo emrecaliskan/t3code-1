@@ -945,7 +945,7 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
 }
 
 /**
- * Whether a lineage child folds into its parent's finished group: settled by the shelves' rule,
+ * Whether a lineage child folds into its parent's idle group: settled by the shelves' rule,
  * or done with nothing pending. An unseen completion still counts as finished, since most workers
  * are never opened.
  */
