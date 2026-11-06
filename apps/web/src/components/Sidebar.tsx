@@ -432,6 +432,7 @@ function useSidebarThreads(input: {
   readonly optimisticDrop: SidebarOptimisticDrop | null;
   readonly threads: readonly EnvironmentThreadShell[];
   readonly delegatedUnderParent: ReadonlySet<string>;
+  readonly routeThreadRef: ScopedThreadRef | null;
   readonly routeThreadKey: string | null;
   /** The open thread's nearest listed ancestor, or the thread itself. */
   readonly routeListedThreadKey: string | null;
@@ -587,13 +588,22 @@ function useSidebarThreads(input: {
     if (row.depth > 0) nestedRows.push(row);
     else nestedRowsByTopKey.set(row.key, (nestedRows = []));
   }
-  useMountedThreadFamilies(
-    lineageRows.flatMap((row) =>
+  const routeThread =
+    routeThreadKey === null
+      ? undefined
+      : threads.find((thread) => threadShellKey(thread) === routeThreadKey);
+  useMountedThreadFamilies([
+    ...lineageRows.flatMap((row) =>
       row.expanded && unloadedParentKeys.has(row.key)
         ? [{ environmentId: row.thread.environmentId, threadId: row.thread.lineage.rootThreadId }]
         : [],
     ),
-  );
+    // An open child the shell left out loads with its family, so its parent row can stand for it.
+    ...(input.routeThreadRef !== null &&
+    (routeThread === undefined || routeThread.lineage.parentThreadId !== null)
+      ? [input.routeThreadRef]
+      : []),
+  ]);
   const sectionByThreadKey = new Map<string, SidebarSection>();
   for (const [list, section] of [
     [pinnedThreads, "pinned"],
@@ -1400,6 +1410,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     optimisticDrop,
     threads,
     delegatedUnderParent,
+    routeThreadRef,
     routeThreadKey,
     routeListedThreadKey,
     unloadedParentKeys: omittedChildParentKeys,
