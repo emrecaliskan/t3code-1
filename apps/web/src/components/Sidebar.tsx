@@ -1104,6 +1104,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   const boringSidebarEnabled = useBoringSidebarEnabled();
   const legacySidebarEnabled = useClientSettings((settings) => settings.legacySidebarEnabled);
   const folderRowsMultiline = useClientSettings((settings) => settings.boringSidebarMultilineRows);
+  const compactRows = useClientSettings((settings) => settings.compactSidebarRows);
   const newThreadContext = useHandleNewThread();
   // Row callbacks capture only the handler; the rest of the context changes with the route.
   const { handleNewThread } = newThreadContext;
@@ -3479,7 +3480,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             ? "folder-multiline"
                             : "folder"
                           : isCard
-                            ? "card"
+                            ? compactRows
+                              ? "compact"
+                              : "card"
                             : "slim";
                         return (
                           <RowComponent

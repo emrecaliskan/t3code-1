@@ -15,6 +15,9 @@ import {
   pinOrderKeyBetween,
   resolveSidebarSweepKeys,
   resolveSidebarThreadStatus,
+  resolveSidebarWaitingLabel,
+  describeSidebarWaiting,
+  resolvePullRequestLandingStage,
   resolveThreadStatusPill,
   resolveWorkingStartedAt,
   searchSidebarThreads,
@@ -36,13 +39,22 @@ import {
   sidebarFolderExpansionKeys,
 } from "./Sidebar.logic";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
+import { pullRequestWatchTaskId } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import {
   sortActiveThreadsByOrderKey,
   sortPinnedThreadsByOrderKey,
 } from "@t3tools/client-runtime/state/thread-sort";
 import { resolveProjectExpanded } from "../uiStateStore";
 import { threadSearchMatchKey } from "@t3tools/client-runtime/state/thread-search";
-import { EnvironmentId, ProjectId, ProviderInstanceId, RunId, ThreadId } from "@t3tools/contracts";
+import {
+  EnvironmentId,
+  ProjectId,
+  ProviderInstanceId,
+  RunId,
+  ThreadId,
+  type ThreadPullRequestLink,
+  type ThreadPullRequestSnapshot,
+} from "@t3tools/contracts";
 
 import {
   DEFAULT_INTERACTION_MODE,
@@ -952,6 +964,208 @@ describe("unseen completion with background work", () => {
     ).toBe(expected.receded);
     expect(isSidebarThreadWorking(thread)).toBe(expected.receded);
     expect(resolveThreadStatusPill({ thread })).toMatchObject({ label: expected.pill });
+  });
+});
+
+describe("resolveSidebarWaitingLabel", () => {
+  const subagent = (taskId: string, description: string) =>
+    ({ taskId, kind: "subagent", description, awaited: true }) as const;
+  it.each([
+    {
+      roster: "a monitor ahead of subagents",
+      tasks: [
+        subagent("agent-1", "🦅 deploy-prod-decide: review PR 9761"),
+        { taskId: "monitor-1", kind: "monitor", description: "Watching pull request #9758" },
+        subagent("agent-2", "🦉 lint: check the diff"),
+      ],
+      expected: {
+        label: "Watching pull request #9758",
+        more: 2,
+        title: "Waiting on 2 subagents and 1 monitor",
+      },
+    },
+    {
+      roster: "one subagent",
+      tasks: [subagent("agent-1", "🦅 deploy-prod-decide: review PR 9761")],
+      expected: {
+        label: "🦅 deploy-prod-decide: review PR 9761",
+        more: 0,
+        title: "Waiting · 🦅 deploy-prod-decide: review PR 9761",
+      },
+    },
+    {
+      roster: "several subagents",
+      tasks: [
+        subagent("agent-1", "🦅 deploy-prod-decide: review PR 9761"),
+        subagent("agent-2", "🦉 lint: check the diff"),
+      ],
+      expected: { label: "2 subagents", more: 0, title: "Waiting on 2 subagents" },
+    },
+    { roster: "no tasks", tasks: [], expected: { label: "Waiting", more: 0, title: undefined } },
+  ] as const)("names a waiting thread with $roster", ({ tasks, expected }) => {
+    const waiting = resolveSidebarWaitingLabel({ pendingBackgroundTasks: tasks, pullRequests: [] });
+    expect({
+      label: waiting.kind === "text" ? waiting.label : null,
+      more: waiting.more,
+      title: waiting.work?.title,
+    }).toEqual(expected);
+  });
+
+  const watch = {
+    startedAt: "2026-11-01T00:00:00.000Z",
+    headSha: null,
+    failedChecks: [],
+    passed: false,
+    passedChecks: [],
+    remarksThrough: "2026-11-01T00:00:00.000Z",
+    remarkIds: [],
+    conflicting: false,
+    wakes: 0,
+  };
+  const pullRequest = (
+    number: number,
+    snapshot: Partial<ThreadPullRequestSnapshot> | null,
+    extra: { watched?: false; source?: ThreadPullRequestLink["source"] } = {},
+  ) =>
+    ({
+      host: "github.com",
+      repository: "acme/app",
+      number,
+      url: `https://github.com/acme/app/pull/${number}`,
+      source: extra.source ?? "agent",
+      linkedAt: "2026-11-01T00:00:00.000Z",
+      snapshot:
+        snapshot === null
+          ? null
+          : {
+              state: "open",
+              title: "Land it",
+              headBranch: "feature",
+              baseBranch: "main",
+              isDraft: false,
+              updatedAt: null,
+              syncedAt: "2026-11-01T00:00:00.000Z",
+              ...snapshot,
+            },
+      stack: null,
+      ...(extra.watched === false ? {} : { watch }),
+    }) as ThreadPullRequestLink;
+  const watchTask = (link: ThreadPullRequestLink) =>
+    ({
+      taskId: pullRequestWatchTaskId(link),
+      kind: "monitor",
+      description: `Watching pull request #${link.number}`,
+      awaited: true,
+    }) as const;
+  const running = pullRequest(9750, { checksState: "pending" });
+  const draft = pullRequest(9751, { isDraft: true });
+  const unread = pullRequest(9752, null);
+
+  it.each([
+    {
+      roster: "a watched pull request beside a subagent",
+      pullRequests: [running],
+      tasks: [subagent("agent-1", "🦉 lint: check the diff"), watchTask(running)],
+      expected: {
+        status: "Waiting on pull request #9750, checks running, +1",
+        pullRequests: [9750],
+        otherItems: ["🦉 lint: check the diff"],
+      },
+    },
+    {
+      roster: "two watched pull requests and links that hold nothing",
+      pullRequests: [
+        draft,
+        running,
+        pullRequest(9753, {}, { watched: false }),
+        pullRequest(9754, { state: "merged" }),
+        pullRequest(9755, {}, { source: "stack-dismissed" }),
+      ],
+      tasks: [watchTask(draft), watchTask(running)],
+      expected: {
+        status: "Waiting on pull request #9751, draft, +1",
+        pullRequests: [9751, 9750],
+        otherItems: [],
+      },
+    },
+    {
+      roster: "a watched pull request not read yet",
+      pullRequests: [unread],
+      tasks: [watchTask(unread)],
+      expected: {
+        status: "Waiting on pull request #9752",
+        pullRequests: [9752],
+        otherItems: [],
+      },
+    },
+  ])("names a thread waiting with $roster by its pull request", (input) => {
+    const waiting = resolveSidebarWaitingLabel({
+      pendingBackgroundTasks: input.tasks,
+      pullRequests: input.pullRequests,
+    });
+    expect({
+      status: describeSidebarWaiting(waiting),
+      pullRequests:
+        waiting.kind === "pullRequest" ? waiting.pullRequests.map(({ link }) => link.number) : [],
+      otherItems:
+        waiting.kind === "pullRequest" ? waiting.otherItems.map((item) => item.label) : null,
+    }).toEqual(input.expected);
+  });
+});
+
+describe("resolvePullRequestLandingStage", () => {
+  const snapshot = (fields: Partial<ThreadPullRequestSnapshot>) =>
+    ({
+      state: "open",
+      isDraft: false,
+      mergeability: "mergeable",
+      checksState: "passing",
+      reviewDecision: "approved",
+      ...fields,
+    }) as const;
+  it.each([
+    { blocker: "a closed PR", fields: { state: "closed", isDraft: true }, expected: "closed" },
+    {
+      blocker: "a draft",
+      fields: { isDraft: true, mergeability: "conflicting" },
+      expected: "draft",
+    },
+    {
+      blocker: "conflicts",
+      fields: { mergeability: "conflicting", checksState: "failing" },
+      expected: "conflicts",
+    },
+    {
+      blocker: "failed checks",
+      fields: { checksState: "failing", reviewDecision: "changes-requested" },
+      expected: "checks failed",
+    },
+    {
+      blocker: "requested changes",
+      fields: { reviewDecision: "changes-requested", checksState: "pending" },
+      expected: "changes requested",
+    },
+    {
+      blocker: "running checks",
+      fields: { checksState: "pending", reviewDecision: "review-required" },
+      expected: "checks running",
+    },
+    {
+      blocker: "a missing review",
+      fields: { reviewDecision: "review-required" },
+      expected: "awaiting review",
+    },
+    {
+      blocker: "nothing",
+      fields: { mergeability: "unknown", checksState: null, reviewDecision: null },
+      expected: "ready to merge",
+    },
+  ] as const)("reads $expected when $blocker blocks the merge", ({ fields, expected }) => {
+    expect(resolvePullRequestLandingStage(snapshot(fields))?.label).toBe(expected);
+  });
+
+  it("names no stage before the pull request is read", () => {
+    expect(resolvePullRequestLandingStage(null)).toBeNull();
   });
 });
 

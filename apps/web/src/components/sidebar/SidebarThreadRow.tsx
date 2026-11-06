@@ -22,6 +22,7 @@ import {
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   AuthOrchestrationOperateScope,
+  isProviderNativeSubagentThread,
   type EnvironmentId,
   type EnvironmentMachineKind,
   type ScopedThreadRef,
@@ -81,6 +82,11 @@ import {
   resolveSidebarRowAccessibility,
   type SidebarDropVerb,
   resolveSidebarThreadStatus,
+  resolveSidebarWaitingLabel,
+  describeSidebarWaiting,
+  type SidebarPullRequestStageTone,
+  type SidebarWaitingLabel,
+  type SidebarWatchedPullRequest,
   resolveThreadLastVisitedAt,
   shouldRecedeSidebarThread,
   resolveWorkingStartedAt,
@@ -89,6 +95,10 @@ import {
   setFileDragActive,
 } from "../Sidebar.logic";
 import { resolveLocalCheckoutBranchMismatch } from "../BranchToolbar.logic";
+import {
+  PullRequestStateGlyph,
+  pullRequestChecksStatePresentation,
+} from "../pullRequest/pullRequestPresentation";
 import {
   ThreadPullRequestBadgeControl,
   ThreadPullRequestsMiniList,
@@ -242,6 +252,7 @@ function SidebarThreadTooltip({
   branchMismatch,
   terminalStatus,
   terminalProcessCount,
+  waiting,
 }: {
   thread: SidebarThreadSummary;
   project: ProjectFaviconProject | null;
@@ -259,6 +270,7 @@ function SidebarThreadTooltip({
   } | null;
   terminalStatus: TerminalStatusIndicator | null;
   terminalProcessCount: number;
+  waiting: SidebarWaitingLabel | null;
 }) {
   const driverKind = providerEntry?.driverKind ?? null;
   const previousProviderNames = thread.providerInstanceHistory
@@ -344,6 +356,49 @@ function SidebarThreadTooltip({
             />
             <div className="min-w-0 truncate text-foreground/75">
               {terminalProcessLabel(terminalProcessCount)}
+            </div>
+          </div>
+        ) : null}
+        {waiting?.work ? (
+          <div className="flex min-w-0 items-start gap-2">
+            <CircleDotDashedIcon
+              aria-hidden
+              className="mt-0.5 size-3 shrink-0 stroke-muted-foreground"
+            />
+            <div className="min-w-0 flex-1 text-foreground/75">
+              {waiting.kind === "pullRequest" ? (
+                <>
+                  <div className="truncate">
+                    {waiting.pullRequests.length === 1
+                      ? "Waiting for a pull request to land"
+                      : `Waiting for ${waiting.pullRequests.length} pull requests to land`}
+                  </div>
+                  {waiting.pullRequests.map((pullRequest) => (
+                    <div
+                      key={pullRequest.link.url}
+                      className="flex min-w-0 items-center gap-1 text-muted-foreground"
+                    >
+                      <WatchedPullRequestLabel pullRequest={pullRequest} iconClassName="size-3" />
+                    </div>
+                  ))}
+                  {waiting.otherItems.map((item) => (
+                    <div key={item.taskId} className="truncate text-muted-foreground">
+                      {item.label}
+                    </div>
+                  ))}
+                </>
+              ) : (
+                <>
+                  <div className="truncate">{waiting.work.title}</div>
+                  {waiting.work.items.length > 1
+                    ? waiting.work.items.map((item) => (
+                        <div key={item.taskId} className="truncate text-muted-foreground">
+                          {item.label}
+                        </div>
+                      ))
+                    : null}
+                </>
+              )}
             </div>
           </div>
         ) : null}
@@ -498,32 +553,69 @@ export function NestedThreadRow(props: SortableThreadRowProps) {
   return <SidebarThreadRow key={rowProps.variant} {...rowProps} thread={thread} />;
 }
 
-const LINEAGE_INDENT_PX = 14;
-const LINEAGE_ELBOW_PX = 18;
+// In `--spacing` units. One level sits a child's glyph clear of its parent's rail.
+const LINEAGE_INDENT = 5;
+// Half the size-4 favicon, so rails run under the glyph's centre.
+const LINEAGE_GLYPH_HALF = 2;
+const LINEAGE_GLYPH_GAP = 0.5;
+const lineageSpacing = (units: number) => `calc(var(--spacing) * ${units})`;
 
-/** Guide lines in the indent of a nested row; see `SidebarLineageRow.guides`. */
-function LineageGuides(props: { guides: ReadonlyArray<boolean> }) {
-  const offset = (level: number) => level * LINEAGE_INDENT_PX + LINEAGE_INDENT_PX / 2;
-  const rails = props.guides
-    .slice(0, -1)
-    .flatMap((continues, level) => (continues ? [offset(level)] : []));
-  const own = offset(props.guides.length - 1);
-  const continues = props.guides.at(-1) === true;
+/** Where a row's leading glyph sits, which its guides hang from. */
+interface LineageGuideAnchor {
+  /** From the row surface's start edge to the leading glyph. */
+  readonly inset: string;
+  /** From the row's top edge to the centre of its first line. */
+  readonly firstLineCenter: string;
+}
+
+/**
+ * File-tree guides: each rail runs under an ancestor's leading glyph, and the row's own elbow
+ * reaches from its parent's rail to just before its glyph. See `SidebarLineageRow.guides`.
+ */
+function LineageGuides(props: {
+  guides: ReadonlyArray<boolean>;
+  /** Starts the rail under this row's glyph for the children rendered below it. */
+  expanded: boolean;
+  anchor: LineageGuideAnchor;
+}) {
+  const { anchor, guides } = props;
+  const railLeft = (level: number) =>
+    `calc(${lineageSpacing(level * LINEAGE_INDENT + LINEAGE_GLYPH_HALF)} + ${anchor.inset})`;
+  const rails = guides.slice(0, -1).flatMap((continues, level) => (continues ? [level] : []));
+  const ownLevel = guides.length - 1;
+  const continues = guides.at(-1) === true;
   const railClassName =
     "pointer-events-none absolute top-0 -bottom-px border-l border-sidebar-border";
   return (
     <span aria-hidden>
-      {rails.map((left) => (
-        <span key={left} className={railClassName} style={{ left }} />
+      {rails.map((level) => (
+        <span key={level} className={railClassName} style={{ left: railLeft(level) }} />
       ))}
-      {continues ? <span className={railClassName} style={{ left: own }} /> : null}
-      <span
-        className={cn(
-          "pointer-events-none absolute top-0 border-b border-sidebar-border",
-          !continues && "rounded-bl-md border-l",
-        )}
-        style={{ left: own, width: LINEAGE_INDENT_PX / 2, height: LINEAGE_ELBOW_PX }}
-      />
+      {ownLevel >= 0 && continues ? (
+        <span className={railClassName} style={{ left: railLeft(ownLevel) }} />
+      ) : null}
+      {ownLevel >= 0 ? (
+        <span
+          className={cn(
+            "pointer-events-none absolute top-0 border-b border-sidebar-border",
+            !continues && "rounded-bl-md border-l",
+          )}
+          style={{
+            left: railLeft(ownLevel),
+            width: lineageSpacing(LINEAGE_INDENT - LINEAGE_GLYPH_HALF - LINEAGE_GLYPH_GAP),
+            height: anchor.firstLineCenter,
+          }}
+        />
+      ) : null}
+      {props.expanded ? (
+        <span
+          className={railClassName}
+          style={{
+            left: railLeft(guides.length),
+            top: `calc(${anchor.firstLineCenter} + ${lineageSpacing(LINEAGE_GLYPH_HALF + LINEAGE_GLYPH_GAP)})`,
+          }}
+        />
+      ) : null}
     </span>
   );
 }
@@ -577,11 +669,136 @@ function TopStatusIcon(props: { icon: keyof typeof TOP_STATUS_ICONS; className: 
   return <Icon aria-hidden className={cn("shrink-0", props.className)} />;
 }
 
+// Muted stages keep the status line's own color.
+const PULL_REQUEST_STAGE_TONE_CLASS_NAME: Record<SidebarPullRequestStageTone, string | undefined> =
+  {
+    muted: undefined,
+    pending: pullRequestChecksStatePresentation("pending").toneClassName,
+    destructive: pullRequestChecksStatePresentation("failing").toneClassName,
+    success: pullRequestChecksStatePresentation("passing").toneClassName,
+  };
+
+function WatchedPullRequestLabel(props: {
+  pullRequest: SidebarWatchedPullRequest;
+  iconClassName: string;
+}) {
+  const { link, stage } = props.pullRequest;
+  return (
+    <>
+      <PullRequestStateGlyph
+        state={link.snapshot?.state ?? "open"}
+        isDraft={link.snapshot?.isDraft ?? false}
+        className={props.iconClassName}
+      />
+      <span className="shrink-0">#{link.number}</span>
+      {stage === null ? null : (
+        <>
+          <span aria-hidden className="shrink-0">
+            ·
+          </span>
+          <span className={cn("min-w-0 truncate", PULL_REQUEST_STAGE_TONE_CLASS_NAME[stage.tone])}>
+            {stage.label}
+          </span>
+        </>
+      )}
+    </>
+  );
+}
+
+function TopStatusContent(props: {
+  icon: keyof typeof TOP_STATUS_ICONS;
+  label: string;
+  waiting: SidebarWaitingLabel | null;
+  iconClassName: string;
+}) {
+  const more =
+    props.waiting !== null && props.waiting.more > 0 ? (
+      <span className="shrink-0">+{props.waiting.more}</span>
+    ) : null;
+  return (
+    <>
+      {props.waiting?.kind === "pullRequest" ? (
+        <WatchedPullRequestLabel
+          pullRequest={props.waiting.pullRequests[0]}
+          iconClassName={props.iconClassName}
+        />
+      ) : (
+        <>
+          <TopStatusIcon icon={props.icon} className={props.iconClassName} />
+          <span className="min-w-0 truncate">{props.label}</span>
+        </>
+      )}
+      {more}
+    </>
+  );
+}
+
+const CARD_ROW_GUIDE_ANCHOR: LineageGuideAnchor = {
+  inset: "var(--sidebar-row-content-inset)",
+  // The li's py-0.5, the content's inset, and half the h-5 project line.
+  firstLineCenter: `calc(${lineageSpacing(0.5 + 2.5)} + var(--sidebar-content-inset))`,
+};
+
+// h-9, or py-1.5 plus half the h-6 title line on two-line rows.
+const ONE_LINE_ROW_FIRST_LINE_CENTER = lineageSpacing(4.5);
+
+// Every variant but "card" renders the one-line row; these are the facts that set them apart.
+const ONE_LINE_ROW_LAYOUT = {
+  slim: {
+    testId: "sidebar-row-slim",
+    contentInset: lineageSpacing(2.5),
+    inFolder: false,
+    quiet: true,
+    statusInTimeSlot: false,
+    twoLines: false,
+  },
+  // A card's content on one line, for the Labs compact rows setting.
+  compact: {
+    testId: "sidebar-row-compact",
+    contentInset: lineageSpacing(2.5),
+    inFolder: false,
+    quiet: false,
+    statusInTimeSlot: true,
+    twoLines: false,
+  },
+  folder: {
+    testId: "sidebar-row-folder",
+    contentInset: lineageSpacing(9),
+    inFolder: true,
+    quiet: false,
+    statusInTimeSlot: true,
+    twoLines: false,
+  },
+  // Adds the card's branch and PR line under the title.
+  "folder-multiline": {
+    testId: "sidebar-row-folder",
+    contentInset: lineageSpacing(9),
+    inFolder: true,
+    quiet: false,
+    statusInTimeSlot: true,
+    twoLines: true,
+  },
+} as const satisfies Record<
+  string,
+  {
+    testId: string;
+    // Folder rows line titles up with the folder name, past its chevron and icon.
+    contentInset: string;
+    // Leaves the favicon to the folder.
+    inFolder: boolean;
+    // Mutes the title and favicon until hover.
+    quiet: boolean;
+    // With no status line, Working, Waiting, or Done shows where the age would.
+    statusInTimeSlot: boolean;
+    twoLines: boolean;
+  }
+>;
+
+type SidebarThreadRowVariant = "card" | keyof typeof ONE_LINE_ROW_LAYOUT;
+
 type SidebarThreadRowProps = {
   thread: SidebarThreadSummary;
-  // "folder" is a one-line row inside a boring sidebar project folder;
-  // "folder-multiline" adds the card's branch and PR line under it.
-  variant: "card" | "slim" | "folder" | "folder-multiline";
+  variant: SidebarThreadRowVariant;
   navigationParent?: string | undefined;
   /** Levels below a top-level row; nested rows indent and draw guides. */
   lineageDepth?: number | undefined;
@@ -759,6 +976,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
 
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
   const status = resolveSidebarThreadStatus(thread);
+  const waiting = status === "waiting" ? resolveSidebarWaitingLabel(thread) : null;
+  const isProviderNative = isProviderNativeSubagentThread(thread.source);
   const lastVisitedDate = lastVisitedAt === undefined ? null : parseTimestampDate(lastVisitedAt);
   const wokeAtDate = props.wokeAt === null ? null : parseTimestampDate(props.wokeAt);
   const isWoke =
@@ -786,7 +1005,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         }
       : status === "waiting"
         ? {
-            label: "Waiting",
+            label: waiting?.kind === "text" ? waiting.label : "Waiting",
             icon: "waiting" as const,
             className: "text-muted-foreground",
           }
@@ -873,6 +1092,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       branchMismatch={branchMismatch}
       terminalStatus={terminalStatus}
       terminalProcessCount={terminalProcessCount}
+      waiting={waiting}
     />
   );
 
@@ -1041,11 +1261,24 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const lineageDepth = props.lineageDepth ?? 0;
   const lineageRootProps =
     lineageDepth > 0
-      ? { style: { paddingInlineStart: lineageDepth * LINEAGE_INDENT_PX } }
+      ? { style: { paddingInlineStart: lineageSpacing(lineageDepth * LINEAGE_INDENT) } }
       : undefined;
-  const lineageGuides =
-    lineageDepth > 0 && props.lineageGuides ? <LineageGuides guides={props.lineageGuides} /> : null;
   const lineageExpanded = props.lineageExpanded ?? null;
+  const lineageGuides =
+    (lineageDepth > 0 && props.lineageGuides) || lineageExpanded === true ? (
+      <LineageGuides
+        guides={props.lineageGuides ?? []}
+        expanded={lineageExpanded === true}
+        anchor={
+          variant === "card"
+            ? CARD_ROW_GUIDE_ANCHOR
+            : {
+                inset: ONE_LINE_ROW_LAYOUT[variant].contentInset,
+                firstLineCenter: ONE_LINE_ROW_FIRST_LINE_CENTER,
+              }
+        }
+      />
+    ) : null;
   const { onToggleLineage } = props;
   const lineageToggle =
     lineageExpanded === null || onToggleLineage === undefined ? null : (
@@ -1081,11 +1314,13 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
 
   const accessibility = resolveSidebarRowAccessibility({
     title: thread.title,
-    statusLabel: topStatus?.label ?? null,
+    statusLabel: waiting !== null ? describeSidebarWaiting(waiting) : (topStatus?.label ?? null),
     projectDisplayName: props.projectDisplayName,
     isActive: props.isActive,
   });
 
+  // Provider-native subagents cannot take messages, so they read like receded rows.
+  const titleRecedes = shouldRecede || isProviderNative;
   const title = isRenaming ? (
     <ThreadRenameInput
       title={renamingTitle}
@@ -1099,11 +1334,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       className={cn(
         "min-w-0 text-start text-sm transition-opacity motion-reduce:transition-none",
         props.lineageExpanded == null ? "flex-1" : "flex-initial",
-        shouldRecede ? "font-normal" : "font-medium",
-        variant !== "slim"
+        titleRecedes ? "font-normal" : "font-medium",
+        variant === "card" || !ONE_LINE_ROW_LAYOUT[variant].quiet
           ? cn(
               "truncate",
-              shouldRecede
+              titleRecedes
                 ? "text-foreground/75 group-hover/sidebar-row:text-foreground group-focus-visible/sidebar-row:text-foreground"
                 : status === "failed" && !isUnread && !isWoke
                   ? "text-foreground/95"
@@ -1111,7 +1346,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             )
           : cn(
               "truncate group-focus-within/sidebar-row:text-foreground group-hover/sidebar-row:text-foreground",
-              shouldRecede
+              titleRecedes
                 ? "text-secondary-label"
                 : props.isActive || isWoke || status === "input" || status === "request"
                   ? "text-foreground"
@@ -1126,6 +1361,18 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       {thread.title}
     </span>
   );
+  const providerNativeIcon =
+    isProviderNative && providerEntry !== null ? (
+      <span aria-hidden className="inline-flex shrink-0 items-center">
+        <ProviderInstanceIcon
+          driverKind={providerEntry.driverKind}
+          displayName={providerEntry.displayName}
+          acpRegistryAgentId={providerEntry.acpRegistryAgentId}
+          acpRegistryIconUrl={providerEntry.acpRegistryIconUrl}
+          iconClassName="size-3 grayscale opacity-60"
+        />
+      </span>
+    ) : null;
   const accessibleTitle = isRenaming ? null : <span className="sr-only">{thread.title}</span>;
 
   const prBadgeShape = supportsMultiplePullRequests
@@ -1273,8 +1520,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   ) : null;
 
   if (variant !== "card") {
-    const multiline = variant === "folder-multiline";
-    const inFolder = variant === "folder" || multiline;
+    const layout = ONE_LINE_ROW_LAYOUT[variant];
     return (
       <li
         data-thread-item={threadKey}
@@ -1283,12 +1529,11 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         {...(fileDropHandlers ?? {})}
         className={cn(
           "list-none [content-visibility:auto] [contain-intrinsic-size:auto_--spacing(9)]",
-          metaLine !== null && multiline && "[contain-intrinsic-size:auto_--spacing(13.5)]",
+          metaLine !== null && layout.twoLines && "[contain-intrinsic-size:auto_--spacing(13.5)]",
           sortable?.isDragging && "relative z-20",
-          lineageDepth > 0 && "relative",
+          lineageGuides !== null && "relative",
         )}
       >
-        {lineageGuides}
         <Tooltip disabled={sortable?.isDragging}>
           <TooltipTrigger
             render={
@@ -1301,16 +1546,15 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 aria-expanded={lineageExpanded ?? undefined}
                 aria-label={accessibility.label}
                 aria-current={accessibility.current}
-                data-testid={inFolder ? "sidebar-row-folder" : "sidebar-row-slim"}
+                data-testid={layout.testId}
                 aria-busy={isRegeneratingTitle || undefined}
                 className={cn(
                   rowSurfaceClassName,
-                  multiline
+                  layout.twoLines
                     ? "flex flex-col justify-center px-2.5 py-1.5"
                     : "flex h-9 items-center gap-2.5 px-2.5",
-                  // Lines titles up with the folder name, past its chevron and icon.
-                  inFolder && "ps-9",
                 )}
+                style={{ paddingInlineStart: layout.contentInset }}
                 onClick={handleClick}
                 onDoubleClick={handleDoubleClick}
                 onKeyDown={handleKeyDown}
@@ -1319,13 +1563,14 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             }
           >
             {/* `contents` keeps one-line rows a single flex row. */}
-            <div className={multiline ? "flex h-6 min-w-0 items-center gap-2.5" : "contents"}>
+            <div className={layout.twoLines ? "flex h-6 min-w-0 items-center gap-2.5" : "contents"}>
               {accessibleTitle}
-              {inFolder ? null : (
+              {layout.inFolder ? null : (
                 <span
                   className={cn(
                     "flex shrink-0 items-center transition-opacity",
-                    (!props.isActive || variantAction === "unsettle") &&
+                    layout.quiet &&
+                      (!props.isActive || variantAction === "unsettle") &&
                       "opacity-40 grayscale group-focus-within/sidebar-row:opacity-100 group-focus-within/sidebar-row:grayscale-0 group-hover/sidebar-row:opacity-100 group-hover/sidebar-row:grayscale-0",
                   )}
                 >
@@ -1335,11 +1580,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 </span>
               )}
               {draftIndicator}
+              {providerNativeIcon}
               {title}
               {lineageToggle}
-              {multiline ? titleLineIcons : null}
+              {layout.twoLines ? titleLineIcons : null}
               {pinIndicator}
-              {multiline ? null : terminalStatusIcon}
+              {layout.twoLines ? null : terminalStatusIcon}
               {isRegeneratingTitle ? (
                 <span role="status" className="sr-only">
                   Regenerating title
@@ -1350,14 +1596,15 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               ) : (
                 <span
                   className={cn(
-                    "relative ml-auto flex h-6 min-w-8 shrink-0 items-center justify-end",
+                    "relative ml-auto flex h-6 min-w-8 items-center justify-end",
+                    waiting === null ? "shrink-0" : "max-w-[45%]",
                     props.sweepAction !== null && "hidden",
                     jumpHintLabel && JUMP_HINT_SLOT_CLASS_NAME,
                   )}
                 >
                   <span
                     className={cn(
-                      "inline-flex justify-end tabular-nums text-secondary-label transition-opacity",
+                      "inline-flex min-w-0 justify-end tabular-nums text-secondary-label transition-opacity",
                       !isWoke && "group-any-hover/sidebar-row:opacity-0",
                     )}
                   >
@@ -1367,7 +1614,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                         <AlarmClockIcon aria-hidden className="size-3" />
                         {props.snoozeWakeLabelText}
                       </span>
-                    ) : (inFolder ? isWokeStatus : isWoke) ? (
+                    ) : (layout.statusInTimeSlot ? isWokeStatus : isWoke) ? (
                       <Tooltip>
                         <TooltipTrigger
                           render={
@@ -1384,16 +1631,19 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                         />
                         <TooltipPopup side="top">Dismiss Woke notification</TooltipPopup>
                       </Tooltip>
-                    ) : inFolder && topStatus ? (
-                      // Folder rows have no status line, so the status takes the time slot.
+                    ) : layout.statusInTimeSlot && topStatus ? (
                       <span
                         className={cn(
-                          "inline-flex items-center gap-1 text-xs font-medium",
+                          "inline-flex min-w-0 items-center gap-1 text-xs font-medium",
                           topStatus.className,
                         )}
                       >
-                        <TopStatusIcon icon={topStatus.icon} className="size-3" />
-                        {topStatus.label}
+                        <TopStatusContent
+                          icon={topStatus.icon}
+                          label={topStatus.label}
+                          waiting={waiting}
+                          iconClassName="size-3"
+                        />
                       </span>
                     ) : (
                       <span className="text-xs">
@@ -1468,10 +1718,12 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               )}
               {props.sweepAction !== null ? dragDestination : null}
             </div>
-            {multiline ? metaLine : null}
+            {layout.twoLines ? metaLine : null}
           </TooltipTrigger>
           {detailsTooltip}
         </Tooltip>
+        {/* After the row surface, so selected and hover backgrounds do not hide the elbow. */}
+        {lineageGuides}
       </li>
     );
   }
@@ -1486,10 +1738,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         "list-none py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_78px]",
         metaLineEmpty && "[contain-intrinsic-size:auto_58px]",
         sortable?.isDragging && "relative z-20",
-        lineageDepth > 0 && "relative",
+        lineageGuides !== null && "relative",
       )}
     >
-      {lineageGuides}
       <Tooltip disabled={snoozeMenuOpen || sortable?.isDragging}>
         <TooltipTrigger
           render={
@@ -1541,7 +1792,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               ) : (
                 <span
                   className={cn(
-                    "group/sidebar-status-slot relative ml-auto flex h-5 min-w-8 shrink-0 items-stretch justify-end text-xs",
+                    "group/sidebar-status-slot relative ml-auto flex h-5 min-w-8 items-stretch justify-end text-xs",
+                    waiting === null ? "shrink-0" : "max-w-[45%]",
                     props.sweepAction !== null && "hidden",
                     jumpHintLabel && JUMP_HINT_SLOT_CLASS_NAME,
                   )}
@@ -1551,7 +1803,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       isWokeStatus
                         ? "pointer-events-auto"
                         : "pointer-events-none group-has-[:focus-visible]/sidebar-status-slot:absolute group-has-[:focus-visible]/sidebar-status-slot:right-0 group-has-[:focus-visible]/sidebar-status-slot:opacity-0 group-any-hover/sidebar-row:absolute group-any-hover/sidebar-row:right-0 group-any-hover/sidebar-row:opacity-0",
-                      "flex items-center self-center justify-self-end tabular-nums text-secondary-label",
+                      "flex min-w-0 items-center self-center justify-self-end tabular-nums text-secondary-label",
                       snoozeMenuOpen && "pointer-events-none absolute right-0 opacity-0",
                     )}
                   >
@@ -1579,15 +1831,19 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       ) : (
                         <span
                           className={cn(
-                            "inline-flex items-center gap-1 font-medium",
+                            "inline-flex min-w-0 items-center gap-1 font-medium",
                             topStatus.className,
                           )}
                         >
-                          <TopStatusIcon icon={topStatus.icon} className="size-4" />
                           {/* Not a live region: a collapsed sidebar is inert, so
                             BackgroundThreadAnnouncer and the open thread's
                             timeline speak status changes instead. */}
-                          {topStatus.label}
+                          <TopStatusContent
+                            icon={topStatus.icon}
+                            label={topStatus.label}
+                            waiting={waiting}
+                            iconClassName="size-4"
+                          />
                           {status === "preparing" || status === "working" ? (
                             <span aria-hidden>
                               <WorkingDuration startedAt={resolveWorkingStartedAt(thread)} />
@@ -1665,6 +1921,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {props.sweepAction !== null ? dragDestination : null}
             </div>
             <div className="mt-1 flex min-w-0 items-center gap-1.5">
+              {providerNativeIcon}
               {title}
               {lineageToggle}
               {isRegeneratingTitle ? (
@@ -1679,6 +1936,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         </TooltipTrigger>
         {detailsTooltip}
       </Tooltip>
+      {lineageGuides}
     </li>
   );
 });
@@ -1868,6 +2126,7 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
           branchMismatch={branchMismatch}
           terminalStatus={terminalStatus}
           terminalProcessCount={runningTerminalIds.length}
+          waiting={null}
         />
       </Tooltip>
     </li>

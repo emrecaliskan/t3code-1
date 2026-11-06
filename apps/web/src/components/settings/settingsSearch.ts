@@ -469,6 +469,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: ["beta boring sidebar folder rows multiline branch pull request details"],
   },
   {
+    id: "compact-sidebar-rows",
+    title: "Compact sidebar rows",
+    to: "/settings/labs",
+    searchTerms: ["beta dense single one line sidebar thread rows cards pinned active working"],
+  },
+  {
     id: "tool-call-visibility",
     title: "Tool calls in chat",
     to: "/settings/labs",

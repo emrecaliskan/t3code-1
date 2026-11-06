@@ -159,6 +159,9 @@ needs you. Use the pen button on a folder, or right-click it, to start a thread 
 Pinned threads stay above the folders, and Snoozed and Settled stay below them. In this mode you
 cannot drag threads, and the Working section is off. Each device keeps its own choice.
 
+To show pinned and active threads on one line each, turn on **Settings → Labs → Compact sidebar
+rows** on web and desktop.
+
 ## Settle finished work
 
 Choose **Settle thread** from its menu to move finished work out of the active list

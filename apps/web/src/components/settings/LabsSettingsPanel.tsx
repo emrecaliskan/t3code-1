@@ -24,6 +24,7 @@ export function LabsSettingsPanel() {
       <SettingsSection id="beta" title="Beta">
         <BoringSidebarRow />
         <BoringSidebarMultilineRow />
+        <CompactSidebarRowsRow />
         <ToolCallVisibilityRow />
         {/* Clerk is only mounted when this build has T3 Connect. */}
         {hasCloudPublicConfig() ? <GuestLinksRowWithSignIn /> : <GuestLinksRow />}
@@ -70,6 +71,24 @@ function BoringSidebarMultilineRow() {
             updateSettings({ boringSidebarMultilineRows: Boolean(checked) })
           }
           aria-label="Two-line folder rows"
+        />
+      }
+    />
+  );
+}
+
+function CompactSidebarRowsRow() {
+  const settings = useScopedSettings();
+  const updateSettings = useUpdateScopedSettings();
+  return (
+    <SettingsRow
+      {...searchableSetting("compact-sidebar-rows")}
+      description="Show pinned and active threads on one line: the title and its status."
+      control={
+        <Switch
+          checked={settings.compactSidebarRows}
+          onCheckedChange={(checked) => updateSettings({ compactSidebarRows: Boolean(checked) })}
+          aria-label="Compact sidebar rows"
         />
       }
     />

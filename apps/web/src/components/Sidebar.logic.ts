@@ -3,7 +3,16 @@ import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environ
 import { resolveThreadWorkingStartedAt } from "@t3tools/client-runtime/state/models";
 import { threadKey } from "@t3tools/client-runtime/state/entities";
 import { isShownUnderParent } from "@t3tools/client-runtime/state/threads";
-import { backgroundWorkHoldsCompletion } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
+import {
+  presentPendingBackgroundWork,
+  type PendingBackgroundWorkItem,
+  type PendingBackgroundWorkPresentation,
+} from "@t3tools/client-runtime/state/thread-execution";
+import {
+  backgroundWorkHoldsCompletion,
+  pullRequestWatchTaskId,
+  watchedPullRequests,
+} from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
 import * as React from "react";
 import {
@@ -22,6 +31,8 @@ import {
   type ContextMenuItem,
   type EnvironmentId,
   type ThreadId,
+  type ThreadPullRequestLink,
+  type ThreadPullRequestSnapshot,
 } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import type { AsyncResult } from "effect/reactivity";
@@ -914,6 +925,129 @@ export function resolveSidebarThreadStatus(thread: SidebarThreadStatusInput): Si
     return thread.runtime.lastErrorClass === "usage_limit" ? "limited" : "failed";
   }
   return "ready";
+}
+
+export type SidebarPullRequestStageTone = "muted" | "pending" | "destructive" | "success";
+
+export interface SidebarPullRequestStage {
+  readonly label: string;
+  readonly tone: SidebarPullRequestStageTone;
+}
+
+type PullRequestStageSnapshot = Pick<
+  ThreadPullRequestSnapshot,
+  "state" | "isDraft" | "mergeability" | "checksState" | "reviewDecision"
+>;
+
+/** The first rule that matches names what blocks the merge. */
+const PULL_REQUEST_STAGE_RULES: ReadonlyArray<{
+  readonly matches: (snapshot: PullRequestStageSnapshot) => boolean;
+  readonly stage: SidebarPullRequestStage;
+}> = [
+  // A closed PR stays watched, so it must not read as ready to merge.
+  { matches: (s) => s.state === "closed", stage: { label: "closed", tone: "destructive" } },
+  { matches: (s) => s.isDraft, stage: { label: "draft", tone: "muted" } },
+  {
+    matches: (s) => s.mergeability === "conflicting",
+    stage: { label: "conflicts", tone: "destructive" },
+  },
+  {
+    matches: (s) => s.checksState === "failing",
+    stage: { label: "checks failed", tone: "destructive" },
+  },
+  {
+    matches: (s) => s.reviewDecision === "changes-requested",
+    stage: { label: "changes requested", tone: "destructive" },
+  },
+  {
+    matches: (s) => s.checksState === "pending",
+    stage: { label: "checks running", tone: "pending" },
+  },
+  {
+    matches: (s) => s.reviewDecision === "review-required",
+    stage: { label: "awaiting review", tone: "muted" },
+  },
+];
+
+const READY_TO_MERGE: SidebarPullRequestStage = { label: "ready to merge", tone: "success" };
+
+/** Null until the pull request has been read once. */
+export function resolvePullRequestLandingStage(
+  snapshot: PullRequestStageSnapshot | null,
+): SidebarPullRequestStage | null {
+  if (snapshot === null) return null;
+  return PULL_REQUEST_STAGE_RULES.find((rule) => rule.matches(snapshot))?.stage ?? READY_TO_MERGE;
+}
+
+export interface SidebarWatchedPullRequest {
+  readonly link: ThreadPullRequestLink;
+  readonly stage: SidebarPullRequestStage | null;
+}
+
+export type SidebarWaitingLabel =
+  | {
+      readonly kind: "pullRequest";
+      /** The row names the first; the rest count toward `more`. */
+      readonly pullRequests: readonly [SidebarWatchedPullRequest, ...SidebarWatchedPullRequest[]];
+      /** Pending work besides the watched pull requests. */
+      readonly otherItems: ReadonlyArray<PendingBackgroundWorkItem>;
+      /** Pending work the label leaves unnamed, shown as `+N`. */
+      readonly more: number;
+      readonly work: PendingBackgroundWorkPresentation | null;
+    }
+  | {
+      readonly kind: "text";
+      readonly label: string;
+      /** Pending work the label leaves unnamed, shown as `+N`. */
+      readonly more: number;
+      readonly work: PendingBackgroundWorkPresentation | null;
+    };
+
+/**
+ * A watched pull request names the wait first. Otherwise it names work the lineage tree does not
+ * already show before falling back to subagents.
+ */
+export function resolveSidebarWaitingLabel(
+  thread: Pick<SidebarThreadSummary, "pendingBackgroundTasks" | "pullRequests">,
+): SidebarWaitingLabel {
+  const work = presentPendingBackgroundWork(thread.pendingBackgroundTasks);
+  const watched = watchedPullRequests(thread.pullRequests).map(
+    (link): SidebarWatchedPullRequest => ({
+      link,
+      stage: resolvePullRequestLandingStage(link.snapshot),
+    }),
+  );
+  const [first, ...rest] = watched;
+  if (first !== undefined) {
+    const watchTaskIds = new Set(watched.map(({ link }) => pullRequestWatchTaskId(link)));
+    const otherItems = (work?.items ?? []).filter((item) => !watchTaskIds.has(item.taskId));
+    return {
+      kind: "pullRequest",
+      pullRequests: [first, ...rest],
+      otherItems,
+      more: rest.length + otherItems.length,
+      work,
+    };
+  }
+  if (work === null) return { kind: "text", label: "Waiting", more: 0, work };
+  const named = work.items.find((item) => item.kind !== "subagent");
+  if (named !== undefined) {
+    return { kind: "text", label: named.label, more: work.items.length - 1, work };
+  }
+  const [only] = work.items;
+  return work.items.length === 1 && only !== undefined
+    ? { kind: "text", label: only.label, more: 0, work }
+    : { kind: "text", label: `${work.items.length} subagents`, more: 0, work };
+}
+
+/** The status a screen reader hears for a waiting row. */
+export function describeSidebarWaiting(waiting: SidebarWaitingLabel): string {
+  const more = waiting.more > 0 ? `+${waiting.more}` : null;
+  if (waiting.kind === "text") return more === null ? waiting.label : `${waiting.label} ${more}`;
+  const [{ link, stage }] = waiting.pullRequests;
+  return [`Waiting on pull request #${link.number}`, stage?.label, more]
+    .filter((part) => part !== undefined && part !== null)
+    .join(", ");
 }
 
 /**
