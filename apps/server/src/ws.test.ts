@@ -745,11 +745,13 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
       threads.map((thread) => thread.id),
     );
     assert.isUndefined(full?.olderSettled);
+    assert.isUndefined(full?.idleSubagentParentIds);
     const withoutChildren = yield* firstSnapshot({ omitIdleSubagents: true });
     assert.deepEqual(
       withoutChildren?.threads.map((thread) => thread.id),
       ["parent", "live", ...recent, "old"],
     );
+    assert.deepEqual(withoutChildren?.idleSubagentParentIds, [ThreadId.make("parent")]);
     const withoutOld = yield* firstSnapshot({ omitIdleSubagents: true, omitOlderSettled: true });
     assert.deepEqual(
       withoutOld?.threads.map((thread) => thread.id),

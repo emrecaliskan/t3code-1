@@ -57,6 +57,7 @@ export interface EnvironmentShellState {
 }
 
 const EMPTY_REMOVALS: ReadonlyMap<ThreadId, number> = new Map();
+const NO_THREAD_IDS: ReadonlyArray<ThreadId> = Object.freeze([]);
 // Shared by every shell state, so a rebuilt one never reuses a generation another already used.
 let lastShellGeneration = 0;
 
@@ -653,11 +654,21 @@ export function createEnvironmentShellAtoms<R, E>(
 
   const { statusAtom, hasSnapshotAtom } = createEnvironmentShellProgressAtoms(stateValueAtom);
 
+  /** Parents whose idle subagent children the snapshot left to their thread family. */
+  const idleSubagentParentIdsAtom = Atom.family((environmentId: EnvironmentId) =>
+    Atom.make(
+      (get): ReadonlyArray<ThreadId> =>
+        Option.getOrNull(get(stateValueAtom(environmentId)).snapshot)?.idleSubagentParentIds ??
+        NO_THREAD_IDS,
+    ).pipe(Atom.withLabel(`environment-shell-idle-subagent-parents:${environmentId}`)),
+  );
+
   return {
     stateAtom,
     stateValueAtom,
     statusAtom,
     hasSnapshotAtom,
+    idleSubagentParentIdsAtom,
   };
 }
 

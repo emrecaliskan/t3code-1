@@ -235,18 +235,45 @@ interface ShellSubscriberOptions {
 
 function trimShellSnapshot(
   base: OrchestrationV2ShellSnapshot,
+  rows: ReadonlyArray<ShellTrimRow>,
   facts: ShellTrimFacts,
   options: ShellSubscriberOptions & { readonly now: DateTime.Utc },
 ): OrchestrationV2ShellSnapshot {
+  if (!options.omitIdleSubagents && !options.omitOlderSettled) return base;
   const threads = options.omitIdleSubagents
     ? omitIdleSubagentShellsWith(base.threads, facts)
     : base.threads;
-  if (!options.omitOlderSettled) return { ...base, threads };
-  const older = omitOlderSettledShellsWith(
-    { threads, snapshotSequence: base.snapshotSequence, now: options.now },
-    facts,
-  );
-  return { ...base, threads: older.threads, olderSettled: older.olderSettled };
+  const older = options.omitOlderSettled
+    ? omitOlderSettledShellsWith(
+        { threads, snapshotSequence: base.snapshotSequence, now: options.now },
+        facts,
+      )
+    : null;
+  const kept = older?.threads ?? threads;
+  return {
+    ...base,
+    threads: kept,
+    ...(older === null ? {} : { olderSettled: older.olderSettled }),
+    ...(options.omitIdleSubagents
+      ? { idleSubagentParentIds: omittedSubagentParentIds(rows, kept) }
+      : {}),
+  };
+}
+
+/** Parents with a subagent child among `rows` that `kept` leaves out. */
+function omittedSubagentParentIds(
+  rows: ReadonlyArray<ShellTrimRow>,
+  kept: ReadonlyArray<Pick<OrchestrationV2ThreadShell, "id">>,
+): ReadonlyArray<ThreadId> {
+  const keptIds = new Set(kept.map((thread) => thread.id));
+  const parentIds = new Set<ThreadId>();
+  for (const row of rows) {
+    const parentId = row.lineage.parentThreadId;
+    if (row.lineage.relationshipToParent === "subagent" && parentId && !keptIds.has(row.id)) {
+      parentIds.add(parentId);
+    }
+  }
+  return [...parentIds];
 }
 
 /**
@@ -322,9 +349,13 @@ export const loadSubscriberShellSnapshot = Effect.fn("ShellStream.loadSubscriber
       threads: yield* read.decodeThreads,
       snapshotSequence: read.snapshotSequence,
     });
-    const facts = shellTrimFacts(read.index ?? base.threads);
+    const rows = read.index ?? base.threads;
+    const facts = shellTrimFacts(rows);
     return {
-      snapshot: trimShellSnapshot(base, facts, { ...input.options, now: yield* DateTime.now }),
+      snapshot: trimShellSnapshot(base, rows, facts, {
+        ...input.options,
+        now: yield* DateTime.now,
+      }),
       subagentThreadIds: facts.subagentThreadIds,
     };
   },
