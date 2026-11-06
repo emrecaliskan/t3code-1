@@ -458,16 +458,14 @@ function useSidebarThreads(input: {
     scopedProjectKeys,
     delegatedUnderParent,
   );
-  // Lineage as if every listed thread rendered: it picks the row a closed shelf keeps for the
-  // open thread. Which rows nest is decided below, from the rows the shelves place.
-  const structuralForest = buildSidebarLineageForest({ candidates: lineageCandidates, threads });
-  // A nested open thread stands for itself; one with no row (a side chat) for its listed ancestor.
+  // An open thread that can have a row stands for itself; a side chat for its listed ancestor.
   const routeLineageKey =
-    routeThreadKey !== null && structuralForest.parentByKey.has(routeThreadKey)
+    routeThreadKey !== null &&
+    lineageCandidates.some((thread) => threadShellKey(thread) === routeThreadKey)
       ? routeThreadKey
       : input.routeListedThreadKey;
-  const routeTopKey =
-    routeLineageKey === null ? null : sidebarLineageTopKey(routeLineageKey, structuralForest);
+  // Closed shelves keep the open thread's own listed row, so opening a fork never moves it.
+  const routeListedKey = input.routeListedThreadKey;
   const threadLineageExpandedById = useUiStateStore((store) => store.threadLineageExpandedById);
   // Folders already separate the work, so boring mode has no Working shelf.
   const workingShelfEnabled =
@@ -532,21 +530,26 @@ function useSidebarThreads(input: {
     settledThreads.length + olderSettledShelf.unloadedCount(partition.visibleThreads);
   const visibleSettledThreads = (() => {
     const visible = listedSettledThreads.slice(0, settledVisibleCount);
-    if (routeTopKey !== null && !visible.some((thread) => threadShellKey(thread) === routeTopKey)) {
-      const routeThread = settledThreads.find((thread) => threadShellKey(thread) === routeTopKey);
+    if (
+      routeListedKey !== null &&
+      !visible.some((thread) => threadShellKey(thread) === routeListedKey)
+    ) {
+      const routeThread = settledThreads.find(
+        (thread) => threadShellKey(thread) === routeListedKey,
+      );
       if (routeThread !== undefined) visible.push(routeThread);
     }
     return visible.length === settledThreads.length ? settledThreads : visible;
   })();
   const placedSettledThreads = settledShelfExpanded
     ? visibleSettledThreads
-    : routeThreadOnly(visibleSettledThreads, routeTopKey);
+    : routeThreadOnly(visibleSettledThreads, routeListedKey);
   const placedSnoozedThreads = snoozedShelfExpanded
     ? partition.snoozedThreads
-    : routeThreadOnly(partition.snoozedThreads, routeTopKey);
+    : routeThreadOnly(partition.snoozedThreads, routeListedKey);
   const placedWorkingThreads = workingShelfExpanded
     ? partition.workingThreads
-    : routeThreadOnly(partition.workingThreads, routeTopKey);
+    : routeThreadOnly(partition.workingThreads, routeListedKey);
   const placedFolders =
     folderGroups === null
       ? null
@@ -560,9 +563,9 @@ function useSidebarThreads(input: {
               group: folder.group,
               collapsed,
               // A closed folder still shows the open thread, and hints at the rest.
-              threads: collapsed ? routeThreadOnly(folder.threads, routeTopKey) : folder.threads,
+              threads: collapsed ? routeThreadOnly(folder.threads, routeListedKey) : folder.threads,
               hiddenThreads: collapsed
-                ? folder.threads.filter((thread) => threadShellKey(thread) !== routeTopKey)
+                ? folder.threads.filter((thread) => threadShellKey(thread) !== routeListedKey)
                 : EMPTY_THREADS,
             };
           },
@@ -656,8 +659,9 @@ function useSidebarThreads(input: {
       routeLineageKey === null
         ? null
         : (resolveSidebarLineageRowKey(routeLineageKey, lineageForest, lineageRowByKey) ??
-          routeTopKey),
-    routeTopThreadKey: routeTopKey,
+          routeListedKey),
+    routeTopThreadKey:
+      routeListedKey === null ? null : sidebarLineageTopKey(routeListedKey, lineageForest),
     lineageRowByKey,
     nestedRowsByTopKey,
     searchableThreads: [
