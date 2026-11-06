@@ -1059,7 +1059,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           onToggleLineage(threadKey, !lineageExpanded);
         }}
         onPointerDown={(event) => event.stopPropagation()}
-        className="-ms-1 inline-flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-sm text-sidebar-muted-foreground outline-none hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        className="me-auto inline-flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-sm text-sidebar-muted-foreground outline-none hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
       >
         <ChevronDownIcon aria-hidden className={cn("size-3", !lineageExpanded && "-rotate-90")} />
       </button>
@@ -1097,7 +1097,8 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     <span
       aria-hidden
       className={cn(
-        "min-w-0 flex-1 text-start text-sm transition-opacity motion-reduce:transition-none",
+        "min-w-0 text-start text-sm transition-opacity motion-reduce:transition-none",
+        props.lineageExpanded == null ? "flex-1" : "flex-initial",
         shouldRecede ? "font-normal" : "font-medium",
         variant !== "slim"
           ? cn(
@@ -1319,7 +1320,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           >
             {/* `contents` keeps one-line rows a single flex row. */}
             <div className={multiline ? "flex h-6 min-w-0 items-center gap-2.5" : "contents"}>
-              {lineageToggle}
               {accessibleTitle}
               {inFolder ? null : (
                 <span
@@ -1336,6 +1336,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               )}
               {draftIndicator}
               {title}
+              {lineageToggle}
               {multiline ? titleLineIcons : null}
               {pinIndicator}
               {multiline ? null : terminalStatusIcon}
@@ -1519,7 +1520,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             )}
           >
             <div className="flex h-5 min-w-0 items-center gap-1.5">
-              {lineageToggle}
               {draftIndicator}
               {props.project ? (
                 <ProjectFavicon project={props.project} className="size-4 shrink-0" />
@@ -1666,6 +1666,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             </div>
             <div className="mt-1 flex min-w-0 items-center gap-1.5">
               {title}
+              {lineageToggle}
               {isRegeneratingTitle ? (
                 <span role="status" className="sr-only">
                   Regenerating title
