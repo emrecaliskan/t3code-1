@@ -164,6 +164,7 @@ import {
   resolveSidebarLineageRowKey,
   sidebarLineageTopKey,
   type SidebarLineageRow,
+  type SidebarLineageThreadRow,
 } from "./sidebar/sidebarLineage";
 import { useThreadSearch } from "../state/queries";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
@@ -197,6 +198,7 @@ import {
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
   firstValidTimestampMs,
+  hasUnseenCompletion,
   isSidebarNestedLinkClick,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
@@ -207,6 +209,7 @@ import {
   resolveSidebarDropTarget,
   resolveSidebarDropVerb,
   resolveSidebarThreadSection,
+  resolveThreadLastVisitedAt,
   resolveSidebarReorderableThreadKeys,
   searchSidebarThreads,
   shouldCreateNewThreadInCurrentProject,
@@ -268,9 +271,11 @@ import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
 import {
   SidebarSearchResultRow,
   NestedThreadRow,
+  SidebarSettledGroupRow,
   SortableThreadRow,
   type SidebarProviderEntry,
   type SidebarSweepAction,
+  type SidebarThreadRowVariant,
 } from "./sidebar/SidebarThreadRow";
 import { SidebarDraftBlock } from "./sidebar/SidebarDraftBlock";
 import {
@@ -631,9 +636,23 @@ function useSidebarThreads(input: {
     forest: lineageForest,
     expandedByKey: threadLineageExpandedById,
     unloadedParentKeys,
+    // The shelves' own rule, where the partition already placed the thread. An unseen completion
+    // stays in view; local visit marks only matter on servers that do not record visits.
+    isSettled: (thread) =>
+      (sectionOf.get(threadShellKey(thread)) ??
+        resolveSidebarThreadSection(thread, {
+          configLoaded: serverConfigs.has(thread.environmentId),
+          now: partition.snoozeNow,
+        })) === "settled" &&
+      !hasUnseenCompletion({
+        ...thread,
+        lastVisitedAt: resolveThreadLastVisitedAt(thread.lastVisitedAt, undefined),
+      }),
+    routeKey: routeLineageKey,
   });
-  const orderedThreads = lineageRows.map((row) => row.thread);
-  const lineageRowByKey = new Map(lineageRows.map((row) => [row.key, row] as const));
+  const threadRows = lineageRows.filter((row) => row.kind === "thread");
+  const orderedThreads = threadRows.map((row) => row.thread);
+  const lineageRowByKey = new Map(threadRows.map((row) => [row.key, row] as const));
   const nestedRowsByTopKey = new Map<string, SidebarLineageRow<EnvironmentThreadShell>[]>();
   let nestedRows: SidebarLineageRow<EnvironmentThreadShell>[] = [];
   for (const row of lineageRows) {
@@ -645,7 +664,7 @@ function useSidebarThreads(input: {
       ? undefined
       : threads.find((thread) => threadShellKey(thread) === routeThreadKey);
   useMountedThreadFamilies([
-    ...lineageRows.flatMap((row) =>
+    ...threadRows.flatMap((row) =>
       row.expanded && unloadedParentKeys.has(row.key)
         ? [{ environmentId: row.thread.environmentId, threadId: row.thread.lineage.rootThreadId }]
         : [],
@@ -770,11 +789,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
           : { ...projected, snoozedAt: thread.snoozedAt, snoozedUntil: thread.snoozedUntil },
       );
     } else {
-      const section = resolveSidebarThreadSection({
-        snoozed: configLoaded && effectiveSnoozed(thread, { now: preciseNow }),
-        settled: configLoaded && thread.settledOverride === "settled",
-        pinned: thread.pinnedAt != null,
-      });
+      const section = resolveSidebarThreadSection(thread, { configLoaded, now: preciseNow });
       (section === "snoozed"
         ? snoozed
         : section === "settled"
@@ -3445,6 +3460,19 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                     )}
                   >
                     {(() => {
+                      const rowVariantFor = (
+                        section: SidebarSection,
+                        folderRow: string | undefined,
+                      ): SidebarThreadRowVariant =>
+                        folderRow
+                          ? folderRowsMultiline
+                            ? "folder-multiline"
+                            : "folder"
+                          : section === "active" || section === "pinned" || section === "working"
+                            ? compactRows
+                              ? "compact"
+                              : "card"
+                            : "slim";
                       const renderThreadRow = (
                         thread: EnvironmentThreadShell,
                         section: SidebarSection,
@@ -3455,10 +3483,36 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           scopeThreadRef(thread.environmentId, thread.id),
                         );
                         const nestedRows = nestedRowsByTopKey.get(threadKey) ?? EMPTY_LINEAGE_ROWS;
+                        // A settled group hands its parent's title on to the rows it holds.
+                        const familyTitleByKey = new Map([[threadKey, thread.title]]);
+                        for (const row of nestedRows) {
+                          const title =
+                            row.kind === "thread"
+                              ? row.thread.title
+                              : familyTitleByKey.get(row.parentKey);
+                          if (title !== undefined) familyTitleByKey.set(row.key, title);
+                        }
                         return [
                           renderThreadTreeRow(thread, section, folderRow),
                           ...nestedRows.map((row) =>
-                            renderThreadTreeRow(row.thread, section, folderRow, row),
+                            row.kind === "settledGroup" ? (
+                              <SidebarSettledGroupRow
+                                key={row.key}
+                                row={row}
+                                variant={rowVariantFor(section, folderRow)}
+                                onToggle={setThreadLineageExpanded}
+                              />
+                            ) : (
+                              renderThreadTreeRow(
+                                row.thread,
+                                section,
+                                folderRow,
+                                row,
+                                row.parentKey === null
+                                  ? undefined
+                                  : familyTitleByKey.get(row.parentKey),
+                              )
+                            ),
                           ),
                         ];
                       };
@@ -3466,24 +3520,15 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         thread: EnvironmentThreadShell,
                         section: SidebarSection,
                         folderRow: string | undefined,
-                        nested?: SidebarLineageRow<EnvironmentThreadShell>,
+                        nested?: SidebarLineageThreadRow<EnvironmentThreadShell>,
+                        parentTitle?: string,
                       ) => {
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
                         );
                         const lineage = nested ?? lineageRowByKey.get(threadKey);
                         const RowComponent = nested ? NestedThreadRow : SortableThreadRow;
-                        const isCard =
-                          section === "active" || section === "pinned" || section === "working";
-                        const rowVariant = folderRow
-                          ? folderRowsMultiline
-                            ? "folder-multiline"
-                            : "folder"
-                          : isCard
-                            ? compactRows
-                              ? "compact"
-                              : "card"
-                            : "slim";
+                        const rowVariant = rowVariantFor(section, folderRow);
                         return (
                           <RowComponent
                             key={threadKey}
@@ -3501,6 +3546,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             lineageGuides={lineage?.guides}
                             lineageExpanded={lineage?.expandable ? lineage.expanded : null}
                             onToggleLineage={setThreadLineageExpanded}
+                            lineageParentTitle={parentTitle}
                             navigationParent={
                               nested?.parentKey ??
                               folderRow ??

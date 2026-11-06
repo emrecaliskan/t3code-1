@@ -5,7 +5,10 @@ import {
   buildSidebarLineageForest,
   flattenSidebarLineage,
   resolveSidebarLineageRowKey,
+  sidebarLineageRowTitle,
   sidebarLineageTopKey,
+  sidebarSettledGroupKey,
+  type SidebarLineageRow,
   type SidebarLineageThread,
 } from "./sidebarLineage";
 
@@ -43,6 +46,8 @@ function thread(
 }
 
 const key = (id: string) => `${environmentId}:${id}`;
+const label = (row: SidebarLineageRow<SidebarLineageThread>) =>
+  row.kind === "thread" ? row.thread.id : `${row.count} settled`;
 
 function tree(
   threads: ReadonlyArray<SidebarLineageThread>,
@@ -50,6 +55,8 @@ function tree(
     readonly candidates?: ReadonlyArray<SidebarLineageThread>;
     readonly expanded?: Record<string, boolean>;
     readonly idle?: ReadonlyArray<string>;
+    readonly settled?: ReadonlyArray<string>;
+    readonly route?: string;
   } = {},
 ) {
   const candidates = options.candidates ?? threads;
@@ -64,11 +71,13 @@ function tree(
     forest,
     expandedByKey: options.expanded ?? {},
     unloadedParentKeys: new Set((options.idle ?? []).map(key)),
+    isSettled: (candidate) => options.settled?.includes(candidate.id) ?? false,
+    routeKey: options.route === undefined ? null : key(options.route),
   });
   return {
     forest,
     rows,
-    shape: rows.map((row) => `${"  ".repeat(row.depth)}${row.thread.id}`),
+    shape: rows.map((row) => `${"  ".repeat(row.depth)}${label(row)}`),
   };
 }
 
@@ -207,24 +216,31 @@ describe("flattenSidebarLineage", () => {
         idle: ["idle"],
       },
     );
-    expect(rows.map((row) => [row.thread.id, row.expandable, row.expanded])).toEqual([
+    expect(
+      rows.map((row) => [label(row), row.kind === "thread" && row.expandable, row.expanded]),
+    ).toEqual([
       ["parent", true, false],
       ["lone", false, false],
       ["idle", true, false],
     ]);
   });
 
-  it("draws guides that continue past every child but the last", () => {
+  it("draws guides that continue past every child but the last, the settled group", () => {
     const threads = [
       thread("root"),
       thread("first", { parent: "root", createdAt: "2026-01-02T00:00:00.000Z" }),
       thread("nested", { parent: "first", root: "root" }),
       thread("last", { parent: "root", createdAt: "2026-01-03T00:00:00.000Z" }),
+      thread("done", { parent: "root", createdAt: "2026-01-04T00:00:00.000Z" }),
     ];
-    const allOpen = Object.fromEntries(threads.map((entry) => [key(entry.id), true]));
+    const allOpen = Object.fromEntries(
+      [...threads.map((entry) => key(entry.id)), sidebarSettledGroupKey(key("root"))].map(
+        (rowKey) => [rowKey, true],
+      ),
+    );
     expect(
-      tree(threads, { expanded: allOpen }).rows.map((row) => [
-        row.thread.id,
+      tree(threads, { expanded: allOpen, settled: ["done"] }).rows.map((row) => [
+        label(row),
         row.parentKey,
         row.guides,
       ]),
@@ -232,8 +248,54 @@ describe("flattenSidebarLineage", () => {
       ["root", null, []],
       ["first", key("root"), [true]],
       ["nested", key("first"), [true, false]],
-      ["last", key("root"), [false]],
+      ["last", key("root"), [true]],
+      ["1 settled", key("root"), [false]],
+      ["done", sidebarSettledGroupKey(key("root")), [false, false]],
     ]);
+  });
+
+  it("folds settled children into one closed group after the others", () => {
+    const threads = [
+      thread("root"),
+      thread("early", { parent: "root", createdAt: "2026-01-02T00:00:00.000Z" }),
+      thread("open", { parent: "root", createdAt: "2026-01-03T00:00:00.000Z" }),
+      thread("late", { parent: "root", createdAt: "2026-01-04T00:00:00.000Z" }),
+      thread("late-worker", { parent: "late", root: "root" }),
+    ];
+    const expanded = { [key("root")]: true, [key("late")]: true };
+    expect(tree(threads, { expanded }).shape).toEqual([
+      "root",
+      "  early",
+      "  open",
+      "  late",
+      "    late-worker",
+    ]);
+    const settled = ["early", "late"];
+    expect(tree(threads, { expanded, settled }).shape).toEqual(["root", "  open", "  2 settled"]);
+    expect(
+      tree(threads, {
+        expanded: { ...expanded, [sidebarSettledGroupKey(key("root"))]: true },
+        settled,
+      }).shape,
+    ).toEqual(["root", "  open", "  2 settled", "    early", "    late", "      late-worker"]);
+  });
+
+  it("keeps the open thread's line and settled work with a live descendant unfolded", () => {
+    const threads = [
+      thread("root"),
+      thread("done", { parent: "root", createdAt: "2026-01-02T00:00:00.000Z" }),
+      thread("waiting", { parent: "root", createdAt: "2026-01-03T00:00:00.000Z" }),
+      thread("running", { parent: "waiting", root: "root", live: true }),
+      thread("viewed", { parent: "root", createdAt: "2026-01-04T00:00:00.000Z" }),
+      thread("route", { parent: "viewed", root: "root" }),
+    ];
+    expect(
+      tree(threads, {
+        expanded: { [key("viewed")]: true },
+        settled: ["done", "waiting", "viewed", "route"],
+        route: "route",
+      }).shape,
+    ).toEqual(["root", "  waiting", "    running", "  viewed", "    route", "  1 settled"]);
   });
 });
 
@@ -250,5 +312,28 @@ describe("resolveSidebarLineageRowKey", () => {
     expect(resolveSidebarLineageRowKey(key("grandchild"), forest, rendered)).toBe(key("child"));
     expect(resolveSidebarLineageRowKey(key("elsewhere"), forest, rendered)).toBeNull();
     expect(sidebarLineageTopKey(key("grandchild"), forest)).toBe(key("root"));
+  });
+});
+
+describe("sidebarLineageRowTitle", () => {
+  it.each([
+    [
+      "🐝 deploy-prod-decide: psql schema check in decide",
+      "🦫 deploy-prod-decide lead",
+      "🐝 psql schema check in decide",
+    ],
+    ["deploy-prod-decide: review PR 9761", "deploy-prod-decide", "review PR 9761"],
+    ["🦅 Deploy-Prod: review", "🦫 deploy-prod lead", "🦅 review"],
+    [
+      "Async calls: S1c chat helpers",
+      "Operation concept overhaul",
+      "Async calls: S1c chat helpers",
+    ],
+    ["🐝 deploy-prod: check", "🦫 deploy-production lead", "🐝 deploy-prod: check"],
+    ["🐝 deploy-prod check", "🦫 deploy-prod lead", "🐝 deploy-prod check"],
+    ["🐝 deploy-prod:check", "🦫 deploy-prod lead", "🐝 deploy-prod:check"],
+    ["🐝 deploy-prod:   ", "🦫 deploy-prod lead", "🐝 deploy-prod:   "],
+  ])("shows %j under %j as %j", (title, parentTitle, expected) => {
+    expect(sidebarLineageRowTitle(title, parentTitle)).toBe(expected);
   });
 });

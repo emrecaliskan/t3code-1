@@ -125,6 +125,7 @@ import { Menu, MenuItem, MenuItemDetail, MenuPopup, MenuSeparator, MenuTrigger }
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { useThreadHasUnsentDraft } from "../../composerDraftStore";
+import { sidebarLineageRowTitle, type SidebarLineageSettledGroupRow } from "./sidebarLineage";
 
 // The fields thread rows show. Provider status pushes refresh `checkedAt`,
 // status and auth on every provider; leaving those out keeps each
@@ -619,6 +620,50 @@ function LineageGuides(props: {
     </span>
   );
 }
+/** Folds a parent's settled children into one row that opens like a parent row. */
+export function SidebarSettledGroupRow(props: {
+  row: SidebarLineageSettledGroupRow;
+  /** Its siblings' variant, so the guides line up with theirs. */
+  variant: SidebarThreadRowVariant;
+  onToggle: (key: string, expanded: boolean) => void;
+}) {
+  const { row, variant, onToggle } = props;
+  const inset =
+    variant === "card" ? CARD_ROW_GUIDE_ANCHOR.inset : ONE_LINE_ROW_LAYOUT[variant].contentInset;
+  const toggle = () => onToggle(row.key, !row.expanded);
+  return (
+    <li
+      className="relative list-none"
+      style={{ paddingInlineStart: lineageSpacing(row.depth * LINEAGE_INDENT) }}
+    >
+      <LineageGuides
+        guides={row.guides}
+        expanded={row.expanded}
+        anchor={{ inset, firstLineCenter: lineageSpacing(3.5) }}
+      />
+      <div
+        role="button"
+        tabIndex={0}
+        data-sidebar-row={row.key}
+        data-sidebar-parent={row.parentKey}
+        aria-expanded={row.expanded}
+        className="flex h-7 w-full cursor-pointer items-center gap-2.5 rounded-md text-xs text-sidebar-muted-foreground outline-none select-none hover:bg-sidebar-row-hover hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        style={{ paddingInlineStart: inset }}
+        onClick={toggle}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          toggle();
+        }}
+      >
+        <span className="inline-flex size-4 shrink-0 items-center justify-center">
+          <ChevronDownIcon aria-hidden className={cn("size-3", !row.expanded && "-rotate-90")} />
+        </span>
+        {row.count} settled
+      </div>
+    </li>
+  );
+}
 export type SidebarSweepAction = "settle" | "unsettle" | "unsnooze";
 const dropVerbBadge: Record<SidebarDropVerb, ReactNode> = {
   pin: (
@@ -794,7 +839,7 @@ const ONE_LINE_ROW_LAYOUT = {
   }
 >;
 
-type SidebarThreadRowVariant = "card" | keyof typeof ONE_LINE_ROW_LAYOUT;
+export type SidebarThreadRowVariant = "card" | keyof typeof ONE_LINE_ROW_LAYOUT;
 
 type SidebarThreadRowProps = {
   thread: SidebarThreadSummary;
@@ -806,6 +851,8 @@ type SidebarThreadRowProps = {
   /** Null when the row has no children to show. */
   lineageExpanded?: boolean | null | undefined;
   onToggleLineage?: ((threadKey: string, expanded: boolean) => void) | undefined;
+  /** The title of the row this one sits under, whose repeated prefix the row hides. */
+  lineageParentTitle?: string | undefined;
   variantAction: SidebarSweepAction;
   settlementSupported: boolean;
   snoozeSupported: boolean;
@@ -931,6 +978,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     return leaseRowRef(row);
   };
   const isRegeneratingTitle = thread.titleRegeneration != null;
+  const rowTitle =
+    props.lineageParentTitle === undefined
+      ? thread.title
+      : sidebarLineageRowTitle(thread.title, props.lineageParentTitle);
   const localLastVisitedAt = useUiStateStore((state) => state.threadLastVisitedAtById[threadKey]);
   const lastVisitedAt = resolveThreadLastVisitedAt(thread.lastVisitedAt, localLastVisitedAt);
   const isSelected = useThreadSelectionStore((state) => state.selectedThreadKeys.has(threadKey));
@@ -1313,7 +1364,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     ) : null;
 
   const accessibility = resolveSidebarRowAccessibility({
-    title: thread.title,
+    title: rowTitle,
     statusLabel: waiting !== null ? describeSidebarWaiting(waiting) : (topStatus?.label ?? null),
     projectDisplayName: props.projectDisplayName,
     isActive: props.isActive,
@@ -1356,9 +1407,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             ),
         isRegeneratingTitle && "opacity-55",
       )}
-      dir={textDirection(thread.title)}
+      dir={textDirection(rowTitle)}
     >
-      {thread.title}
+      {rowTitle}
     </span>
   );
   const providerNativeIcon =
@@ -1373,7 +1424,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         />
       </span>
     ) : null;
-  const accessibleTitle = isRenaming ? null : <span className="sr-only">{thread.title}</span>;
+  const accessibleTitle = isRenaming ? null : <span className="sr-only">{rowTitle}</span>;
 
   const prBadgeShape = supportsMultiplePullRequests
     ? resolveThreadPullRequestBadge(thread.pullRequests)

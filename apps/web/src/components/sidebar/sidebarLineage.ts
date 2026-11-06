@@ -18,20 +18,39 @@ export interface SidebarLineageForest<T> {
   readonly childrenByKey: ReadonlyMap<string, ReadonlyArray<T>>;
 }
 
-export interface SidebarLineageRow<T> {
-  readonly thread: T;
+/** A visible row under the sidebar's top-level threads, in render order. */
+export type SidebarLineageRow<T> = SidebarLineageThreadRow<T> | SidebarLineageSettledGroupRow;
+
+interface SidebarLineageRowPlacement {
   readonly key: string;
   readonly depth: number;
-  readonly parentKey: string | null;
-  /** Known children, or idle subagents the shell left out. */
-  readonly expandable: boolean;
-  readonly expanded: boolean;
   /**
    * One entry per level from 1 to `depth`: whether that level's guide line continues below this
    * row. The last entry is the row's own connector, false at its parent's last child.
    */
   readonly guides: ReadonlyArray<boolean>;
 }
+
+export interface SidebarLineageThreadRow<T> extends SidebarLineageRowPlacement {
+  readonly kind: "thread";
+  readonly thread: T;
+  /** The row this one sits under: its parent thread, or the settled group that holds it. */
+  readonly parentKey: string | null;
+  /** Known children, or idle subagents the shell left out. */
+  readonly expandable: boolean;
+  readonly expanded: boolean;
+}
+
+/** The last row under a parent, holding its settled children. */
+export interface SidebarLineageSettledGroupRow extends SidebarLineageRowPlacement {
+  readonly kind: "settledGroup";
+  readonly parentKey: string;
+  readonly count: number;
+  readonly expanded: boolean;
+}
+
+/** The settled group's row key, which also keys its open state. */
+export const sidebarSettledGroupKey = (parentKey: string) => `${parentKey}:settled`;
 
 const keyOf = (thread: Pick<SidebarLineageThread, "environmentId" | "id">) =>
   scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
@@ -136,7 +155,8 @@ export function buildSidebarLineageForest<T extends SidebarLineageThread>(input:
 
 /**
  * The visible rows under `roots`, in order. A parent the user never toggled starts open while any
- * descendant is live.
+ * descendant is live. Settled children fold into one closed group after the others, except one on
+ * the way to `routeKey` or with a live descendant.
  */
 export function flattenSidebarLineage<T extends SidebarLineageThread>(input: {
   readonly roots: ReadonlyArray<T>;
@@ -144,8 +164,11 @@ export function flattenSidebarLineage<T extends SidebarLineageThread>(input: {
   readonly expandedByKey: Readonly<Record<string, boolean>>;
   /** Parents with children the shell left out, which load when the parent opens. */
   readonly unloadedParentKeys: ReadonlySet<string>;
+  readonly isSettled: (thread: T) => boolean;
+  /** The open thread's row key. */
+  readonly routeKey: string | null;
 }): SidebarLineageRow<T>[] {
-  const { forest, expandedByKey, unloadedParentKeys } = input;
+  const { forest, expandedByKey, unloadedParentKeys, isSettled } = input;
   const liveBelow = new Map<string, boolean>();
   const hasLiveDescendant = (key: string): boolean => {
     const known = liveBelow.get(key);
@@ -156,6 +179,23 @@ export function flattenSidebarLineage<T extends SidebarLineageThread>(input: {
     liveBelow.set(key, live);
     return live;
   };
+  const onRoute = new Set<string>();
+  for (
+    let key = input.routeKey ?? undefined;
+    key !== undefined && !onRoute.has(key);
+    key = forest.parentByKey.get(key)
+  ) {
+    onRoute.add(key);
+  }
+  const folds = (child: T) => {
+    const key = keyOf(child);
+    return (
+      isSettled(child) &&
+      !onRoute.has(key) &&
+      !isLiveSubagentShell(child.source) &&
+      !hasLiveDescendant(key)
+    );
+  };
 
   const rows: SidebarLineageRow<T>[] = [];
   const visit = (thread: T, parentKey: string | null, guides: ReadonlyArray<boolean>): void => {
@@ -163,9 +203,40 @@ export function flattenSidebarLineage<T extends SidebarLineageThread>(input: {
     const children = forest.childrenByKey.get(key) ?? [];
     const expandable = children.length > 0 || unloadedParentKeys.has(key);
     const expanded = expandable && (expandedByKey[key] ?? hasLiveDescendant(key));
-    rows.push({ thread, key, depth: guides.length, parentKey, expandable, expanded, guides });
+    rows.push({
+      kind: "thread",
+      thread,
+      key,
+      depth: guides.length,
+      parentKey,
+      expandable,
+      expanded,
+      guides,
+    });
     if (!expanded) return;
-    children.forEach((child, index) => visit(child, key, [...guides, index < children.length - 1]));
+    const open: T[] = [];
+    const settled: T[] = [];
+    for (const child of children) (folds(child) ? settled : open).push(child);
+    open.forEach((child, index) =>
+      visit(child, key, [...guides, settled.length > 0 || index < open.length - 1]),
+    );
+    if (settled.length === 0) return;
+    const groupKey = sidebarSettledGroupKey(key);
+    const groupGuides = [...guides, false];
+    const groupExpanded = expandedByKey[groupKey] ?? false;
+    rows.push({
+      kind: "settledGroup",
+      key: groupKey,
+      depth: groupGuides.length,
+      parentKey: key,
+      count: settled.length,
+      expanded: groupExpanded,
+      guides: groupGuides,
+    });
+    if (!groupExpanded) return;
+    settled.forEach((child, index) =>
+      visit(child, groupKey, [...groupGuides, index < settled.length - 1]),
+    );
   };
   for (const root of input.roots) visit(root, null, []);
   return rows;
@@ -201,4 +272,23 @@ export function sidebarLineageTopKey(
     current = parentKey;
   }
   return current;
+}
+
+const LEADING_SYMBOLS = /^[^\p{L}\p{N}]*/u;
+const PREFIXED_TITLE = /^([^:]+):\s+(\S[\s\S]*)$/u;
+const WORD_CHAR = /[\p{L}\p{N}_]/u;
+
+/**
+ * A nested row's title without a `<prefix>: ` lead that repeats its parent's title, keeping the
+ * row's leading symbols. Any other title comes back unchanged.
+ */
+export function sidebarLineageRowTitle(title: string, parentTitle: string): string {
+  const symbols = LEADING_SYMBOLS.exec(title)![0];
+  const match = PREFIXED_TITLE.exec(title.slice(symbols.length));
+  if (match === null) return title;
+  const [, prefix = "", remainder = ""] = match;
+  const parentRest = parentTitle.slice(LEADING_SYMBOLS.exec(parentTitle)![0].length);
+  if (parentRest.slice(0, prefix.length).toLowerCase() !== prefix.toLowerCase()) return title;
+  const next = parentRest.charAt(prefix.length);
+  return next === "" || !WORD_CHAR.test(next) ? symbols + remainder : title;
 }

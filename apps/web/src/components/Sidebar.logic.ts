@@ -185,14 +185,14 @@ export const animateSidebarLayoutChanges: AnimateLayoutChanges = (args) =>
 
 export type SidebarSection = "pinned" | "active" | "working" | "snoozed" | "settled";
 
-export function resolveSidebarThreadSection(input: {
-  readonly snoozed: boolean;
-  readonly settled: boolean;
-  readonly pinned: boolean;
-}): SidebarSection {
-  if (input.snoozed) return "snoozed";
-  if (input.settled) return "settled";
-  if (input.pinned) return "pinned";
+/** A thread's own section; snoozing and settling count only once its server config loads. */
+export function resolveSidebarThreadSection(
+  thread: ThreadSnoozeShell & Pick<SidebarThreadSummary, "settledOverride" | "pinnedAt">,
+  input: { readonly configLoaded: boolean; readonly now: string },
+): SidebarSection {
+  if (input.configLoaded && effectiveSnoozed(thread, { now: input.now })) return "snoozed";
+  if (input.configLoaded && thread.settledOverride === "settled") return "settled";
+  if (thread.pinnedAt != null) return "pinned";
   return "active";
 }
 
