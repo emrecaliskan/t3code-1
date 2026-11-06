@@ -33,6 +33,7 @@ import {
   AlarmClockOffIcon,
   ArrowRightLeftIcon,
   CheckIcon,
+  ChevronDownIcon,
   CircleAlertIcon,
   CircleCheckIcon,
   CircleDashedIcon,
@@ -442,16 +443,16 @@ export const draftPenClassName = "size-3 shrink-0 text-warning-foreground";
 export const SIDEBAR_SORTABLE_DRAG_DISABLED = { draggable: true } as const;
 const SIDEBAR_SORTABLE_DRAG_ENABLED = { draggable: false } as const;
 
+type SortableThreadRowProps = Omit<SidebarThreadRowProps, "sortable"> & {
+  sortableId: string;
+  sortableDisabled: boolean;
+  contextDrag: boolean;
+};
+
 // Takes the row's props rather than a render function: a closure from the
 // sidebar body is new on every sidebar render, which rebuilt the bag and
 // re-rendered every memoized row with it.
-export function SortableThreadRow(
-  props: Omit<SidebarThreadRowProps, "sortable"> & {
-    sortableId: string;
-    sortableDisabled: boolean;
-    contextDrag: boolean;
-  },
-) {
+export function SortableThreadRow(props: SortableThreadRowProps) {
   const { sortableId, sortableDisabled, contextDrag, ...rowProps } = props;
   const canOperateThread = useEnvironmentScope(
     rowProps.thread.environmentId,
@@ -481,6 +482,50 @@ export function SortableThreadRow(
     rowProps.thread;
   // Keyed by variant so a card/slim switch remounts the row.
   return <SidebarThreadRow key={rowProps.variant} {...rowProps} thread={thread} sortable={bag} />;
+}
+
+/** A row under a parent row: never dragged, so it skips dnd-kit and ignores the sortable props. */
+export function NestedThreadRow(props: SortableThreadRowProps) {
+  const {
+    sortableId: _id,
+    sortableDisabled: _disabled,
+    contextDrag: _contextDrag,
+    ...rowProps
+  } = props;
+  const thread =
+    useThreadShell(scopeThreadRef(rowProps.thread.environmentId, rowProps.thread.id)) ??
+    rowProps.thread;
+  return <SidebarThreadRow key={rowProps.variant} {...rowProps} thread={thread} />;
+}
+
+const LINEAGE_INDENT_PX = 14;
+const LINEAGE_ELBOW_PX = 18;
+
+/** Guide lines in the indent of a nested row; see `SidebarLineageRow.guides`. */
+function LineageGuides(props: { guides: ReadonlyArray<boolean> }) {
+  const offset = (level: number) => level * LINEAGE_INDENT_PX + LINEAGE_INDENT_PX / 2;
+  const rails = props.guides
+    .slice(0, -1)
+    .flatMap((continues, level) => (continues ? [offset(level)] : []));
+  const own = offset(props.guides.length - 1);
+  const continues = props.guides.at(-1) === true;
+  const railClassName =
+    "pointer-events-none absolute top-0 -bottom-px border-l border-sidebar-border";
+  return (
+    <span aria-hidden>
+      {rails.map((left) => (
+        <span key={left} className={railClassName} style={{ left }} />
+      ))}
+      {continues ? <span className={railClassName} style={{ left: own }} /> : null}
+      <span
+        className={cn(
+          "pointer-events-none absolute top-0 border-b border-sidebar-border",
+          !continues && "rounded-bl-md border-l",
+        )}
+        style={{ left: own, width: LINEAGE_INDENT_PX / 2, height: LINEAGE_ELBOW_PX }}
+      />
+    </span>
+  );
 }
 export type SidebarSweepAction = "settle" | "unsettle" | "unsnooze";
 const dropVerbBadge: Record<SidebarDropVerb, ReactNode> = {
@@ -538,6 +583,12 @@ type SidebarThreadRowProps = {
   // "folder-multiline" adds the card's branch and PR line under it.
   variant: "card" | "slim" | "folder" | "folder-multiline";
   navigationParent?: string | undefined;
+  /** Levels below a top-level row; nested rows indent and draw guides. */
+  lineageDepth?: number | undefined;
+  lineageGuides?: ReadonlyArray<boolean> | undefined;
+  /** Null when the row has no children to show. */
+  lineageExpanded?: boolean | null | undefined;
+  onToggleLineage?: ((threadKey: string, expanded: boolean) => void) | undefined;
   variantAction: SidebarSweepAction;
   settlementSupported: boolean;
   snoozeSupported: boolean;
@@ -987,6 +1038,32 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         ...sortable.listeners,
       }
     : {};
+  const lineageDepth = props.lineageDepth ?? 0;
+  const lineageRootProps =
+    lineageDepth > 0
+      ? { style: { paddingInlineStart: lineageDepth * LINEAGE_INDENT_PX } }
+      : undefined;
+  const lineageGuides =
+    lineageDepth > 0 && props.lineageGuides ? <LineageGuides guides={props.lineageGuides} /> : null;
+  const lineageExpanded = props.lineageExpanded ?? null;
+  const { onToggleLineage } = props;
+  const lineageToggle =
+    lineageExpanded === null || onToggleLineage === undefined ? null : (
+      <button
+        type="button"
+        data-sidebar-toggle
+        aria-label={lineageExpanded ? "Hide child threads" : "Show child threads"}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onToggleLineage(threadKey, !lineageExpanded);
+        }}
+        onPointerDown={(event) => event.stopPropagation()}
+        className="-ms-1 inline-flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-sm text-sidebar-muted-foreground outline-none hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+      >
+        <ChevronDownIcon aria-hidden className={cn("size-3", !lineageExpanded && "-rotate-90")} />
+      </button>
+    );
   const destinationVerb = sortable?.isDragging
     ? props.dropVerb
     : props.sweepAction === "unsnooze"
@@ -1201,13 +1278,16 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       <li
         data-thread-item={threadKey}
         {...sortableRootProps}
+        {...lineageRootProps}
         {...(fileDropHandlers ?? {})}
         className={cn(
           "list-none [content-visibility:auto] [contain-intrinsic-size:auto_--spacing(9)]",
           metaLine !== null && multiline && "[contain-intrinsic-size:auto_--spacing(13.5)]",
           sortable?.isDragging && "relative z-20",
+          lineageDepth > 0 && "relative",
         )}
       >
+        {lineageGuides}
         <Tooltip disabled={sortable?.isDragging}>
           <TooltipTrigger
             render={
@@ -1217,6 +1297,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                 tabIndex={0}
                 data-sidebar-row={threadKey}
                 data-sidebar-parent={props.navigationParent}
+                aria-expanded={lineageExpanded ?? undefined}
                 aria-label={accessibility.label}
                 aria-current={accessibility.current}
                 data-testid={inFolder ? "sidebar-row-folder" : "sidebar-row-slim"}
@@ -1238,6 +1319,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           >
             {/* `contents` keeps one-line rows a single flex row. */}
             <div className={multiline ? "flex h-6 min-w-0 items-center gap-2.5" : "contents"}>
+              {lineageToggle}
               {accessibleTitle}
               {inFolder ? null : (
                 <span
@@ -1397,13 +1479,16 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
     <li
       data-thread-item={threadKey}
       {...sortableRootProps}
+      {...lineageRootProps}
       {...(fileDropHandlers ?? {})}
       className={cn(
         "list-none py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_78px]",
         metaLineEmpty && "[contain-intrinsic-size:auto_58px]",
         sortable?.isDragging && "relative z-20",
+        lineageDepth > 0 && "relative",
       )}
     >
+      {lineageGuides}
       <Tooltip disabled={snoozeMenuOpen || sortable?.isDragging}>
         <TooltipTrigger
           render={
@@ -1413,6 +1498,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               tabIndex={0}
               data-sidebar-row={threadKey}
               data-sidebar-parent={props.navigationParent}
+              aria-expanded={lineageExpanded ?? undefined}
               aria-label={accessibility.label}
               aria-current={accessibility.current}
               data-testid="sidebar-row-card"
@@ -1433,6 +1519,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             )}
           >
             <div className="flex h-5 min-w-0 items-center gap-1.5">
+              {lineageToggle}
               {draftIndicator}
               {props.project ? (
                 <ProjectFavicon project={props.project} className="size-4 shrink-0" />

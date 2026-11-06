@@ -156,6 +156,15 @@ import { primaryServerKeybindingsAtom } from "../state/server";
 import { environmentProjects } from "../state/projects";
 import { threadEnvironment } from "../state/threads";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../state/olderSettledShelf";
+import { useMountedThreadFamilies } from "../state/lineageFamilies";
+import { useIdleSubagentParentKeys } from "../state/shell";
+import {
+  buildSidebarLineageForest,
+  flattenSidebarLineage,
+  resolveSidebarLineageRowKey,
+  sidebarLineageTopKey,
+  type SidebarLineageRow,
+} from "./sidebar/sidebarLineage";
 import { useThreadSearch } from "../state/queries";
 import { useOrchestrationCommand } from "../state/use-orchestration-command";
 import { readEnvironmentScope, useEnvironmentScope } from "../state/session";
@@ -179,6 +188,7 @@ import {
 } from "./threadActionMenu.logic";
 import {
   applySidebarThreadDrop,
+  filterSidebarRowCandidates,
   filterSidebarV2VisibleThreads,
   groupSidebarThreadsByProject,
   sidebarFolderExpansionKeys,
@@ -257,6 +267,7 @@ import { composerDraftHasUserContent, DraftId, useComposerDraftStore } from "../
 import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
 import {
   SidebarSearchResultRow,
+  NestedThreadRow,
   SortableThreadRow,
   type SidebarProviderEntry,
   type SidebarSweepAction,
@@ -348,6 +359,8 @@ interface SidebarThreadPartitionInput {
   readonly scopedProjectKeys: ReadonlySet<string> | null;
   /** Tasks linked environments run for a listed thread; they show under it. */
   readonly delegatedUnderParent: ReadonlySet<string>;
+  /** Rows drawn under a parent row, which sections leave out. */
+  readonly nested: ReadonlySet<string>;
   readonly serverConfigs: ReadonlyMap<EnvironmentId, EnvironmentServerConfig>;
   readonly connectedEnvironmentIds: readonly EnvironmentId[];
   readonly optimisticDrop: SidebarOptimisticDrop | null;
@@ -369,6 +382,7 @@ function threadShellKey(thread: Pick<SidebarThreadSummary, "environmentId" | "id
 }
 
 const NO_DRAGGED_ORDER: readonly string[] = [];
+const EMPTY_LINEAGE_ROWS: readonly SidebarLineageRow<EnvironmentThreadShell>[] = [];
 const NO_DRAGGED_ORDERS: {
   readonly settledOrder: readonly string[];
   readonly activeOrder: readonly string[] | undefined;
@@ -418,7 +432,10 @@ function useSidebarThreads(input: {
   readonly optimisticDrop: SidebarOptimisticDrop | null;
   readonly threads: readonly EnvironmentThreadShell[];
   readonly delegatedUnderParent: ReadonlySet<string>;
-  readonly routeRowThreadKey: string | null;
+  readonly routeThreadKey: string | null;
+  /** The open thread's nearest listed ancestor, or the thread itself. */
+  readonly routeListedThreadKey: string | null;
+  readonly idleParentKeys: ReadonlySet<string>;
   // Set in boring mode: the project groups to fold active threads into, in order.
   readonly folderGroups: readonly SidebarProjectSnapshot[] | null;
   // Keeps folders with no active threads, so a project the user filtered to or pinned can start one.
@@ -432,10 +449,24 @@ function useSidebarThreads(input: {
     optimisticDrop,
     threads,
     delegatedUnderParent,
-    routeRowThreadKey,
+    routeThreadKey,
+    idleParentKeys,
     folderGroups,
     keepEmptyFolders: keepEmpty,
   } = input;
+  const lineageForest = buildSidebarLineageForest({
+    candidates: filterSidebarRowCandidates(threads, scopedProjectKeys, delegatedUnderParent),
+    threads,
+  });
+  // A nested open thread stands for itself; one with no row (a side chat) for its listed ancestor.
+  const routeLineageKey =
+    routeThreadKey !== null && lineageForest.parentByKey.has(routeThreadKey)
+      ? routeThreadKey
+      : input.routeListedThreadKey;
+  // Shelves and folders place top-level rows, so they keep the open thread's top-level row.
+  const routeTopKey =
+    routeLineageKey === null ? null : sidebarLineageTopKey(routeLineageKey, lineageForest);
+  const threadLineageExpandedById = useUiStateStore((store) => store.threadLineageExpandedById);
   // Folders already separate the work, so boring mode has no Working shelf.
   const workingShelfEnabled =
     useClientSettings((s) => s.sidebarWorkingShelfEnabled) && folderGroups === null;
@@ -478,6 +509,7 @@ function useSidebarThreads(input: {
     threads,
     scopedProjectKeys,
     delegatedUnderParent,
+    nested: lineageForest.nested,
     serverConfigs,
     connectedEnvironmentIds,
     optimisticDrop,
@@ -500,26 +532,21 @@ function useSidebarThreads(input: {
     settledThreads.length + olderSettledShelf.unloadedCount(partition.visibleThreads);
   const visibleSettledThreads = (() => {
     const visible = listedSettledThreads.slice(0, settledVisibleCount);
-    if (
-      routeRowThreadKey !== null &&
-      !visible.some((thread) => threadShellKey(thread) === routeRowThreadKey)
-    ) {
-      const routeThread = settledThreads.find(
-        (thread) => threadShellKey(thread) === routeRowThreadKey,
-      );
+    if (routeTopKey !== null && !visible.some((thread) => threadShellKey(thread) === routeTopKey)) {
+      const routeThread = settledThreads.find((thread) => threadShellKey(thread) === routeTopKey);
       if (routeThread !== undefined) visible.push(routeThread);
     }
     return visible.length === settledThreads.length ? settledThreads : visible;
   })();
   const renderedSettledThreads = settledShelfExpanded
     ? visibleSettledThreads
-    : routeThreadOnly(visibleSettledThreads, routeRowThreadKey);
+    : routeThreadOnly(visibleSettledThreads, routeTopKey);
   const visibleSnoozedThreads = snoozedShelfExpanded
     ? snoozedThreads
-    : routeThreadOnly(snoozedThreads, routeRowThreadKey);
+    : routeThreadOnly(snoozedThreads, routeTopKey);
   const visibleWorkingThreads = workingShelfExpanded
     ? workingThreads
-    : routeThreadOnly(workingThreads, routeRowThreadKey);
+    : routeThreadOnly(workingThreads, routeTopKey);
   const projectFolders =
     folderGroups === null
       ? null
@@ -532,23 +559,41 @@ function useSidebarThreads(input: {
             group: folder.group,
             collapsed,
             // A closed folder still shows the open thread, and hints at the rest.
-            threads: collapsed
-              ? routeThreadOnly(folder.threads, routeRowThreadKey)
-              : folder.threads,
+            threads: collapsed ? routeThreadOnly(folder.threads, routeTopKey) : folder.threads,
             hiddenThreads: collapsed
-              ? folder.threads.filter((thread) => threadShellKey(thread) !== routeRowThreadKey)
+              ? folder.threads.filter((thread) => threadShellKey(thread) !== routeTopKey)
               : EMPTY_THREADS,
           };
         });
-  const orderedThreads = [
-    ...pinnedThreads,
-    ...(projectFolders === null
-      ? activeThreads
-      : projectFolders.flatMap((folder) => folder.threads)),
-    ...visibleWorkingThreads,
-    ...visibleSnoozedThreads,
-    ...renderedSettledThreads,
-  ];
+  const lineageRows = flattenSidebarLineage({
+    roots: [
+      ...pinnedThreads,
+      ...(projectFolders === null
+        ? activeThreads
+        : projectFolders.flatMap((folder) => folder.threads)),
+      ...visibleWorkingThreads,
+      ...visibleSnoozedThreads,
+      ...renderedSettledThreads,
+    ],
+    forest: lineageForest,
+    expandedByKey: threadLineageExpandedById,
+    idleParentKeys,
+  });
+  const orderedThreads = lineageRows.map((row) => row.thread);
+  const lineageRowByKey = new Map(lineageRows.map((row) => [row.key, row] as const));
+  const nestedRowsByTopKey = new Map<string, SidebarLineageRow<EnvironmentThreadShell>[]>();
+  let nestedRows: SidebarLineageRow<EnvironmentThreadShell>[] = [];
+  for (const row of lineageRows) {
+    if (row.depth > 0) nestedRows.push(row);
+    else nestedRowsByTopKey.set(row.key, (nestedRows = []));
+  }
+  useMountedThreadFamilies(
+    lineageRows.flatMap((row) =>
+      row.expanded && idleParentKeys.has(row.key)
+        ? [{ environmentId: row.thread.environmentId, threadId: row.thread.lineage.rootThreadId }]
+        : [],
+    ),
+  );
   const sectionByThreadKey = new Map<string, SidebarSection>();
   for (const [list, section] of [
     [pinnedThreads, "pinned"],
@@ -563,12 +608,23 @@ function useSidebarThreads(input: {
     ...partition,
     threads,
     workingShelfEnabled,
+    routeRowThreadKey:
+      routeLineageKey === null
+        ? null
+        : (resolveSidebarLineageRowKey(routeLineageKey, lineageForest, lineageRowByKey) ??
+          routeTopKey),
+    routeTopThreadKey: routeTopKey,
+    lineageRowByKey,
+    nestedRowsByTopKey,
     searchableThreads: [
       ...pinnedThreads,
       ...activeThreads,
       ...workingThreads,
       ...snoozedThreads,
       ...settledThreads,
+      ...partition.visibleThreads.filter((thread) =>
+        lineageForest.nested.has(threadShellKey(thread)),
+      ),
     ],
     settledVisibleCount,
     settledCount,
@@ -621,6 +677,7 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   } = input;
   const preciseNow = new Date().toISOString();
   const visible = filterSidebarV2VisibleThreads(threads, scopedProjectKeys, delegatedUnderParent);
+  const topLevel = visible.filter((thread) => !input.nested.has(threadShellKey(thread)));
   const inboxObservation = inboxReturns.observe(workingShelfEnabled ? threads : null);
   const pinned: EnvironmentThreadShell[] = [];
   const active: EnvironmentThreadShell[] = [];
@@ -633,11 +690,11 @@ function partitionSidebarThreads(input: SidebarThreadPartitionInput) {
   const snoozed: EnvironmentThreadShell[] = [];
   const settled: EnvironmentThreadShell[] = [];
   const { draggableThreadKeys, activeReorderableThreadKeys } = resolveSidebarReorderableThreadKeys({
-    threads: visible,
+    threads: topLevel,
     serverConfigs,
     connectedEnvironmentIds: input.connectedEnvironmentIds,
   });
-  for (const thread of visible) {
+  for (const thread of topLevel) {
     const configLoaded = serverConfigs.has(thread.environmentId);
     const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
     if (optimisticDrop?.key === threadKey) {
@@ -1102,7 +1159,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           ),
         );
   const threads = useQuietThreadShells();
-  const routeRowThreadKey =
+  const idleSubagentParentKeys = useIdleSubagentParentKeys();
+  const setThreadLineageExpanded = useUiStateStore((store) => store.setThreadLineageExpanded);
+  const routeListedThreadKey =
     routeThreadRef === null
       ? null
       : scopedThreadKey(
@@ -1123,7 +1182,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   // already lists the row; the active row's ref callback scrolls to it.
   const { widensScope: revealWidensScope } = resolveSidebarRouteReveal({
     reveal: routeReveal,
-    routeKey: routeRowThreadKey,
+    routeKey: routeListedThreadKey,
     isSearching: isSearchingThreads,
     scopedProjectKeys: chosenScopeProjectKeys,
     delegatedUnderParent,
@@ -1147,7 +1206,6 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     clearSelection();
     setPersistedProjectScopeKeys([]);
   }, [clearSelection, revealWidensScope, setPersistedProjectScopeKeys]);
-  const revealActiveRow = useActiveRowReveal(routeReveal, routeRowThreadKey);
   const showProjectEnvironments = projectGroupsSpanEnvironments(projectGroups);
   const scratchMachineLabelFor = (
     thread: Pick<SidebarThreadSummary, "environmentId" | "projectId">,
@@ -1327,6 +1385,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     activeKeys,
     pinnedKeysById,
     activeKeysById,
+    routeRowThreadKey,
+    routeTopThreadKey,
+    lineageRowByKey,
+    nestedRowsByTopKey,
   } = useSidebarThreads({
     projectScopeKey,
     scopedProjectKeys,
@@ -1335,7 +1397,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     optimisticDrop,
     threads,
     delegatedUnderParent,
-    routeRowThreadKey,
+    routeThreadKey,
+    routeListedThreadKey,
+    idleParentKeys: idleSubagentParentKeys,
     folderGroups: boringSidebarEnabled
       ? scopedProjectGroups.length === 0
         ? // An archived project keeps a folder for its active threads, below the rest.
@@ -1345,6 +1409,9 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     keepEmptyFolders: (group) =>
       scopedProjectGroups.length > 0 || (group.pinned && !group.archived),
   });
+  // The reveal tracks the listed row; a nested open thread scrolls its own row for it.
+  const revealListedRow = useActiveRowReveal(routeReveal, routeListedThreadKey);
+  const revealActiveRow = (row: HTMLElement) => revealListedRow(row, routeListedThreadKey ?? "");
 
   // Ranked across environments as the palette ranks them, so one
   // environment's list does not sit above another's better matches; rows
@@ -2033,7 +2100,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     ...(draggedActiveOrder === undefined ? {} : { activeOrder: draggedActiveOrder }),
     settledExpanded: settledShelfExpanded,
     settledVisibleCount,
-    routeThreadKey: routeRowThreadKey,
+    routeThreadKey: routeTopThreadKey,
     snoozedThreadCount: snoozedThreads.length,
   });
   const draggedThreadKey = dragState?.activeKey;
@@ -3257,7 +3324,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           EMPTY_PROVIDER_ENTRIES
                         }
                         isHighlighted={activeSearchResultIndex === index}
-                        isRouteActive={routeRowThreadKey === threadKey}
+                        isRouteActive={routeListedThreadKey === threadKey}
                         resultId={threadSearchResultId(index)}
                         searchMatch={
                           threadSearchMatchByKey.get(
@@ -3328,6 +3395,25 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         const threadKey = scopedThreadKey(
                           scopeThreadRef(thread.environmentId, thread.id),
                         );
+                        const nestedRows = nestedRowsByTopKey.get(threadKey) ?? EMPTY_LINEAGE_ROWS;
+                        return [
+                          renderThreadTreeRow(thread, section, folderRow),
+                          ...nestedRows.map((row) =>
+                            renderThreadTreeRow(row.thread, section, folderRow, row),
+                          ),
+                        ];
+                      };
+                      const renderThreadTreeRow = (
+                        thread: EnvironmentThreadShell,
+                        section: SidebarSection,
+                        folderRow: string | undefined,
+                        nested?: SidebarLineageRow<EnvironmentThreadShell>,
+                      ) => {
+                        const threadKey = scopedThreadKey(
+                          scopeThreadRef(thread.environmentId, thread.id),
+                        );
+                        const lineage = nested ?? lineageRowByKey.get(threadKey);
+                        const RowComponent = nested ? NestedThreadRow : SortableThreadRow;
                         const isCard =
                           section === "active" || section === "pinned" || section === "working";
                         const rowVariant = folderRow
@@ -3338,7 +3424,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             ? "card"
                             : "slim";
                         return (
-                          <SortableThreadRow
+                          <RowComponent
                             key={threadKey}
                             sortableId={threadKey}
                             contextDrag={isContextDrag}
@@ -3350,7 +3436,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             }
                             thread={thread}
                             variant={rowVariant}
+                            lineageDepth={lineage?.depth}
+                            lineageGuides={lineage?.guides}
+                            lineageExpanded={lineage?.expandable ? lineage.expanded : null}
+                            onToggleLineage={setThreadLineageExpanded}
                             navigationParent={
+                              nested?.parentKey ??
                               folderRow ??
                               (section === "working" ||
                               section === "snoozed" ||
@@ -3365,8 +3456,13 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                   ? "unsettle"
                                   : "settle"
                             }
-                            settlementSupported={serverConfigs.has(thread.environmentId)}
-                            snoozeSupported={serverConfigs.has(thread.environmentId)}
+                            // A nested row stays under its parent whatever its own section.
+                            settlementSupported={
+                              nested === undefined && serverConfigs.has(thread.environmentId)
+                            }
+                            snoozeSupported={
+                              nested === undefined && serverConfigs.has(thread.environmentId)
+                            }
                             pinningSupported={serverConfigs.has(thread.environmentId)}
                             isPinned={thread.pinnedAt != null}
                             dropVerb={
@@ -3455,7 +3551,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         if (item.kind === "thread") {
                           // Folders draw active rows in their own place below.
                           if (projectFolders !== null && item.section === "active") continue;
-                          items.push(renderThreadRow(threadByKey.get(item.key)!, item.section));
+                          items.push(...renderThreadRow(threadByKey.get(item.key)!, item.section));
                           continue;
                         }
                         if (projectFolders !== null && item.marker === "active-placeholder") {
@@ -3473,7 +3569,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             );
                             for (const thread of folder.threads) {
                               items.push(
-                                renderThreadRow(
+                                ...renderThreadRow(
                                   thread,
                                   "active",
                                   sidebarFolderRowId(folder.group.projectKey),

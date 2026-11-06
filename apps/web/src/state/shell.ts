@@ -2,6 +2,7 @@ import {
   AVAILABLE_CONNECTION_STATE,
   connectionProjectionPhase,
 } from "@t3tools/client-runtime/connection";
+import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import {
   createEnvironmentShellAtoms,
   createEnvironmentSnapshotAtom,
@@ -66,6 +67,29 @@ export const liveShellEnvironmentIdsAtom = Atom.make((get) => {
   previousLiveEnvironmentIds = next;
   return next;
 }).pipe(Atom.withLabel("web-live-shell-environment-ids"));
+
+let previousIdleSubagentParentKeys: ReadonlySet<string> = new Set();
+/** Thread keys of parents whose idle subagent children the shells left to thread families. */
+const idleSubagentParentKeysAtom = Atom.make((get) => {
+  const next = new Set<string>();
+  for (const environmentId of enabledEnvironmentIds(get(environmentCatalog.catalogValueAtom))) {
+    for (const threadId of get(environmentShell.idleSubagentParentIdsAtom(environmentId))) {
+      next.add(scopedThreadKey(scopeThreadRef(environmentId, threadId)));
+    }
+  }
+  if (
+    next.size === previousIdleSubagentParentKeys.size &&
+    [...next].every((key) => previousIdleSubagentParentKeys.has(key))
+  ) {
+    return previousIdleSubagentParentKeys;
+  }
+  previousIdleSubagentParentKeys = next;
+  return next;
+}).pipe(Atom.withLabel("web-idle-subagent-parent-keys"));
+
+export function useIdleSubagentParentKeys(): ReadonlySet<string> {
+  return useAtomValue(idleSubagentParentKeysAtom);
+}
 
 export const allEnvironmentShellsBootstrappedAtom = Atom.make((get) => {
   const catalog = AsyncResult.value(get(environmentCatalog.catalogAtom));

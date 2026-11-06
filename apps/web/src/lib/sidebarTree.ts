@@ -34,6 +34,10 @@ export function installSidebarTree(root: HTMLElement) {
       : null;
   };
 
+  // A row that opens something else on click carries its own expand control.
+  const toggleRow = (row: HTMLElement) =>
+    (row.querySelector<HTMLElement>("[data-sidebar-toggle]") ?? row).click();
+
   const focusRow = (row: HTMLElement) => {
     // Revealing before focusing also materializes content-visibility:auto descendants.
     row.scrollIntoView({ block: "nearest" });
@@ -123,14 +127,14 @@ export function installSidebarTree(root: HTMLElement) {
         target = rows.at(-1);
         break;
       case "ArrowRight":
-        if (row.getAttribute("aria-expanded") === "false") row.click();
+        if (row.getAttribute("aria-expanded") === "false") toggleRow(row);
         else
           target = rows.find(
             (candidate) => candidate.dataset.sidebarParent === row.dataset.sidebarRow,
           );
         break;
       case "ArrowLeft":
-        if (row.getAttribute("aria-expanded") === "true") row.click();
+        if (row.getAttribute("aria-expanded") === "true") toggleRow(row);
         else
           target = rows.find(
             (candidate) => candidate.dataset.sidebarRow === row.dataset.sidebarParent,
