@@ -526,8 +526,6 @@ function useSidebarThreads(input: {
   });
   const listedSettledThreads = settledThreads.filter(olderSettledShelf.isListed);
   useOlderSettledShelfGrowth(olderSettledShelf, listedSettledThreads);
-  const settledCount =
-    settledThreads.length + olderSettledShelf.unloadedCount(partition.visibleThreads);
   const visibleSettledThreads = (() => {
     const visible = listedSettledThreads.slice(0, settledVisibleCount);
     if (
@@ -595,6 +593,9 @@ function useSidebarThreads(input: {
   const visibleWorkingThreads = topLevelOnly(placedWorkingThreads);
   const visibleSnoozedThreads = topLevelOnly(placedSnoozedThreads);
   const renderedSettledThreads = topLevelOnly(placedSettledThreads);
+  // Settled forks drawn under a parent elsewhere have no Settled row, so the shelf leaves them out.
+  const settledCount =
+    topLevelOnly(settledThreads).length + olderSettledShelf.unloadedCount(partition.visibleThreads);
   const projectFolders =
     placedFolders?.map((folder) => ({ ...folder, threads: topLevelOnly(folder.threads) })) ?? null;
   const lineageRows = flattenSidebarLineage({
@@ -674,7 +675,7 @@ function useSidebarThreads(input: {
     settledVisibleCount,
     settledCount,
     olderSettledShelf,
-    hiddenSettledCount: Math.max(0, settledCount - visibleSettledThreads.length),
+    hiddenSettledCount: Math.max(0, settledCount - topLevelOnly(visibleSettledThreads).length),
     showMoreSettled: () =>
       setSettledTail((current) => ({
         scopeKey: current.scopeKey,
