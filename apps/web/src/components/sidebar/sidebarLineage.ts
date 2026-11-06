@@ -19,7 +19,7 @@ export interface SidebarLineageForest<T> {
 }
 
 /** A visible row under the sidebar's top-level threads, in render order. */
-export type SidebarLineageRow<T> = SidebarLineageThreadRow<T> | SidebarLineageSettledGroupRow;
+export type SidebarLineageRow<T> = SidebarLineageThreadRow<T> | SidebarLineageFinishedGroupRow;
 
 interface SidebarLineageRowPlacement {
   readonly key: string;
@@ -34,23 +34,23 @@ interface SidebarLineageRowPlacement {
 export interface SidebarLineageThreadRow<T> extends SidebarLineageRowPlacement {
   readonly kind: "thread";
   readonly thread: T;
-  /** The row this one sits under: its parent thread, or the settled group that holds it. */
+  /** The row this one sits under: its parent thread, or the finished group that holds it. */
   readonly parentKey: string | null;
   /** Known children, or idle subagents the shell left out. */
   readonly expandable: boolean;
   readonly expanded: boolean;
 }
 
-/** The last row under a parent, holding its settled children. */
-export interface SidebarLineageSettledGroupRow extends SidebarLineageRowPlacement {
-  readonly kind: "settledGroup";
+/** The last row under a parent, holding its finished children. */
+export interface SidebarLineageFinishedGroupRow extends SidebarLineageRowPlacement {
+  readonly kind: "finishedGroup";
   readonly parentKey: string;
   readonly count: number;
   readonly expanded: boolean;
 }
 
-/** The settled group's row key, which also keys its open state. */
-export const sidebarSettledGroupKey = (parentKey: string) => `${parentKey}:settled`;
+/** The finished group's row key, which also keys its open state. */
+export const sidebarFinishedGroupKey = (parentKey: string) => `${parentKey}:finished`;
 
 const keyOf = (thread: Pick<SidebarLineageThread, "environmentId" | "id">) =>
   scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
@@ -175,7 +175,7 @@ export function sidebarLineageDescendants<T extends SidebarLineageThread>(
 
 /**
  * The visible rows under `roots`, in order. A parent the user never toggled starts open while any
- * descendant is live. Settled children fold into one closed group after the others, except one on
+ * descendant is live. Finished children fold into one closed group after the others, except one on
  * the way to `routeKey` or with a live descendant.
  */
 export function flattenSidebarLineage<T extends SidebarLineageThread>(input: {
@@ -184,11 +184,11 @@ export function flattenSidebarLineage<T extends SidebarLineageThread>(input: {
   readonly expandedByKey: Readonly<Record<string, boolean>>;
   /** Parents with children the shell left out, which load when the parent opens. */
   readonly unloadedParentKeys: ReadonlySet<string>;
-  readonly isSettled: (thread: T) => boolean;
+  readonly isFinished: (thread: T) => boolean;
   /** The open thread's row key. */
   readonly routeKey: string | null;
 }): SidebarLineageRow<T>[] {
-  const { forest, expandedByKey, unloadedParentKeys, isSettled } = input;
+  const { forest, expandedByKey, unloadedParentKeys, isFinished } = input;
   const liveBelow = new Map<string, boolean>();
   const hasLiveDescendant = (key: string): boolean => {
     const known = liveBelow.get(key);
@@ -210,7 +210,7 @@ export function flattenSidebarLineage<T extends SidebarLineageThread>(input: {
   const folds = (child: T) => {
     const key = keyOf(child);
     return (
-      isSettled(child) &&
+      isFinished(child) &&
       !onRoute.has(key) &&
       !isLiveSubagentShell(child.source) &&
       !hasLiveDescendant(key)
@@ -235,27 +235,27 @@ export function flattenSidebarLineage<T extends SidebarLineageThread>(input: {
     });
     if (!expanded) return;
     const open: T[] = [];
-    const settled: T[] = [];
-    for (const child of children) (folds(child) ? settled : open).push(child);
+    const finished: T[] = [];
+    for (const child of children) (folds(child) ? finished : open).push(child);
     open.forEach((child, index) =>
-      visit(child, key, [...guides, settled.length > 0 || index < open.length - 1]),
+      visit(child, key, [...guides, finished.length > 0 || index < open.length - 1]),
     );
-    if (settled.length === 0) return;
-    const groupKey = sidebarSettledGroupKey(key);
+    if (finished.length === 0) return;
+    const groupKey = sidebarFinishedGroupKey(key);
     const groupGuides = [...guides, false];
     const groupExpanded = expandedByKey[groupKey] ?? false;
     rows.push({
-      kind: "settledGroup",
+      kind: "finishedGroup",
       key: groupKey,
       depth: groupGuides.length,
       parentKey: key,
-      count: settled.length,
+      count: finished.length,
       expanded: groupExpanded,
       guides: groupGuides,
     });
     if (!groupExpanded) return;
-    settled.forEach((child, index) =>
-      visit(child, groupKey, [...groupGuides, index < settled.length - 1]),
+    finished.forEach((child, index) =>
+      visit(child, groupKey, [...groupGuides, index < finished.length - 1]),
     );
   };
   for (const root of input.roots) visit(root, null, []);

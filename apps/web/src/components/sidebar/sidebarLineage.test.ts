@@ -8,7 +8,7 @@ import {
   sidebarLineageDescendants,
   sidebarLineageRowTitle,
   sidebarLineageTopKey,
-  sidebarSettledGroupKey,
+  sidebarFinishedGroupKey,
   type SidebarLineageRow,
   type SidebarLineageThread,
 } from "./sidebarLineage";
@@ -48,7 +48,7 @@ function thread(
 
 const key = (id: string) => `${environmentId}:${id}`;
 const label = (row: SidebarLineageRow<SidebarLineageThread>) =>
-  row.kind === "thread" ? row.thread.id : `${row.count} settled`;
+  row.kind === "thread" ? row.thread.id : `${row.count} finished`;
 
 function tree(
   threads: ReadonlyArray<SidebarLineageThread>,
@@ -56,7 +56,7 @@ function tree(
     readonly candidates?: ReadonlyArray<SidebarLineageThread>;
     readonly expanded?: Record<string, boolean>;
     readonly idle?: ReadonlyArray<string>;
-    readonly settled?: ReadonlyArray<string>;
+    readonly finished?: ReadonlyArray<string>;
     readonly route?: string;
   } = {},
 ) {
@@ -72,7 +72,7 @@ function tree(
     forest,
     expandedByKey: options.expanded ?? {},
     unloadedParentKeys: new Set((options.idle ?? []).map(key)),
-    isSettled: (candidate) => options.settled?.includes(candidate.id) ?? false,
+    isFinished: (candidate) => options.finished?.includes(candidate.id) ?? false,
     routeKey: options.route === undefined ? null : key(options.route),
   });
   return {
@@ -252,7 +252,7 @@ describe("flattenSidebarLineage", () => {
     ]);
   });
 
-  it("draws guides that continue past every child but the last, the settled group", () => {
+  it("draws guides that continue past every child but the last, the finished group", () => {
     const threads = [
       thread("root"),
       thread("first", { parent: "root", createdAt: "2026-01-02T00:00:00.000Z" }),
@@ -261,12 +261,12 @@ describe("flattenSidebarLineage", () => {
       thread("done", { parent: "root", createdAt: "2026-01-04T00:00:00.000Z" }),
     ];
     const allOpen = Object.fromEntries(
-      [...threads.map((entry) => key(entry.id)), sidebarSettledGroupKey(key("root"))].map(
+      [...threads.map((entry) => key(entry.id)), sidebarFinishedGroupKey(key("root"))].map(
         (rowKey) => [rowKey, true],
       ),
     );
     expect(
-      tree(threads, { expanded: allOpen, settled: ["done"] }).rows.map((row) => [
+      tree(threads, { expanded: allOpen, finished: ["done"] }).rows.map((row) => [
         label(row),
         row.parentKey,
         row.guides,
@@ -276,12 +276,12 @@ describe("flattenSidebarLineage", () => {
       ["first", key("root"), [true]],
       ["nested", key("first"), [true, false]],
       ["last", key("root"), [true]],
-      ["1 settled", key("root"), [false]],
-      ["done", sidebarSettledGroupKey(key("root")), [false, false]],
+      ["1 finished", key("root"), [false]],
+      ["done", sidebarFinishedGroupKey(key("root")), [false, false]],
     ]);
   });
 
-  it("folds settled children into one closed group after the others", () => {
+  it("folds finished children into one closed group after the others", () => {
     const threads = [
       thread("root"),
       thread("early", { parent: "root", createdAt: "2026-01-02T00:00:00.000Z" }),
@@ -297,17 +297,17 @@ describe("flattenSidebarLineage", () => {
       "  late",
       "    late-worker",
     ]);
-    const settled = ["early", "late"];
-    expect(tree(threads, { expanded, settled }).shape).toEqual(["root", "  open", "  2 settled"]);
+    const finished = ["early", "late"];
+    expect(tree(threads, { expanded, finished }).shape).toEqual(["root", "  open", "  2 finished"]);
     expect(
       tree(threads, {
-        expanded: { ...expanded, [sidebarSettledGroupKey(key("root"))]: true },
-        settled,
+        expanded: { ...expanded, [sidebarFinishedGroupKey(key("root"))]: true },
+        finished,
       }).shape,
-    ).toEqual(["root", "  open", "  2 settled", "    early", "    late", "      late-worker"]);
+    ).toEqual(["root", "  open", "  2 finished", "    early", "    late", "      late-worker"]);
   });
 
-  it("keeps the open thread's line and settled work with a live descendant unfolded", () => {
+  it("keeps the open thread's line and finished work with a live descendant unfolded", () => {
     const threads = [
       thread("root"),
       thread("done", { parent: "root", createdAt: "2026-01-02T00:00:00.000Z" }),
@@ -319,10 +319,10 @@ describe("flattenSidebarLineage", () => {
     expect(
       tree(threads, {
         expanded: { [key("viewed")]: true },
-        settled: ["done", "waiting", "viewed", "route"],
+        finished: ["done", "waiting", "viewed", "route"],
         route: "route",
       }).shape,
-    ).toEqual(["root", "  waiting", "    running", "  viewed", "    route", "  1 settled"]);
+    ).toEqual(["root", "  waiting", "    running", "  viewed", "    route", "  1 finished"]);
   });
 });
 

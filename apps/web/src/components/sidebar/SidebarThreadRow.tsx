@@ -128,7 +128,7 @@ import { Menu, MenuItem, MenuItemDetail, MenuPopup, MenuSeparator, MenuTrigger }
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { useThreadHasUnsentDraft } from "../../composerDraftStore";
-import { sidebarLineageRowTitle, type SidebarLineageSettledGroupRow } from "./sidebarLineage";
+import { sidebarLineageRowTitle, type SidebarLineageFinishedGroupRow } from "./sidebarLineage";
 
 // The fields thread rows show. Provider status pushes refresh `checkedAt`,
 // status and auth on every provider; leaving those out keeps each
@@ -623,9 +623,9 @@ function LineageGuides(props: {
     </span>
   );
 }
-/** Folds a parent's settled children into one row that opens like a parent row. */
-export function SidebarSettledGroupRow(props: {
-  row: SidebarLineageSettledGroupRow;
+/** Folds a parent's finished children into one row that opens like a parent row. */
+export function SidebarFinishedGroupRow(props: {
+  row: SidebarLineageFinishedGroupRow;
   /** Its siblings' variant, so the guides line up with theirs. */
   variant: SidebarThreadRowVariant;
   onToggle: (key: string, expanded: boolean) => void;
@@ -662,7 +662,7 @@ export function SidebarSettledGroupRow(props: {
         <span className="inline-flex size-4 shrink-0 items-center justify-center">
           <ChevronDownIcon aria-hidden className={cn("size-3", !row.expanded && "-rotate-90")} />
         </span>
-        {row.count} settled
+        {row.count} idle
       </div>
     </li>
   );
@@ -1349,7 +1349,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             ? "Hide child threads"
             : hiddenCount === undefined
               ? "Show child threads"
-              : `Show ${hiddenCount} child ${hiddenCount === 1 ? "thread" : "threads"}${
+              : `Show ${hiddenCount} active child ${hiddenCount === 1 ? "thread" : "threads"}${
                   hiddenDot === null ? "" : SIDEBAR_FOLDER_DOT_LABEL[hiddenDot]
                 }`
         }

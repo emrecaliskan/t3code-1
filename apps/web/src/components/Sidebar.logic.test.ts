@@ -36,6 +36,7 @@ import {
   resolveSidebarDropVerb,
   groupSidebarThreadsByProject,
   resolveSidebarFolderDot,
+  isSidebarLineageChildFinished,
   sidebarFolderExpansionKeys,
 } from "./Sidebar.logic";
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
@@ -1831,6 +1832,48 @@ describe("resolveSidebarFolderDot", () => {
     expect(resolveSidebarFolderDot([idle, working])).toBe("working");
     expect(resolveSidebarFolderDot([working, unread])).toBe("unread");
     expect(resolveSidebarFolderDot([unread, limited])).toBe("attention");
+  });
+});
+
+describe("isSidebarLineageChildFinished", () => {
+  const runtime = {
+    status: "running" as const,
+    activeRunId: null,
+    providerInstanceId: ProviderInstanceId.make("codex"),
+    providerName: "Codex",
+    lastError: null,
+    updatedAt: "2026-03-09T10:00:00.000Z",
+  };
+  const ready = {
+    hasPendingApprovals: false,
+    hasPendingUserInput: false,
+    latestRun: makeLatestRun(),
+    lastVisitedAt: "2026-03-09T10:06:00.000Z",
+    runtime: null,
+  };
+  const failed = { ...runtime, status: "failed" as const, lastError: "boom" };
+
+  it.each([
+    ["settled", "settled" as const, ready, true],
+    [
+      "ready with an unseen completion",
+      "active",
+      { ...ready, lastVisitedAt: "2026-03-09T10:04:00.000Z" },
+      true,
+    ],
+    [
+      "ready, never visited, provider subagent",
+      "active",
+      { ...ready, lastVisitedAt: undefined, pendingSubagentRequest: null },
+      true,
+    ],
+    ["working", "active", { ...ready, runtime }, false],
+    ["waiting", "active", { ...ready, runtime: { ...runtime, status: "idle" as const } }, false],
+    ["input", "active", { ...ready, hasPendingUserInput: true }, false],
+    ["approval", "active", { ...ready, hasPendingApprovals: true }, false],
+    ["failed", "active", { ...ready, runtime: failed }, false],
+  ] as const)("%s", (_name, section, thread, finished) => {
+    expect(isSidebarLineageChildFinished(thread, { section })).toBe(finished);
   });
 });
 

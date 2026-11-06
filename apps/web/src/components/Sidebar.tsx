@@ -199,7 +199,7 @@ import {
   deleteSelectedThreadEntries,
   filterSidebarProjectScopeItems,
   firstValidTimestampMs,
-  hasUnseenCompletion,
+  isSidebarLineageChildFinished,
   isSidebarNestedLinkClick,
   isTrailingDoubleClick,
   orderItemsByPreferredIds,
@@ -211,7 +211,6 @@ import {
   resolveSidebarDropVerb,
   resolveSidebarFolderDot,
   resolveSidebarThreadSection,
-  resolveThreadLastVisitedAt,
   resolveSidebarReorderableThreadKeys,
   searchSidebarThreads,
   shouldCreateNewThreadInCurrentProject,
@@ -273,7 +272,7 @@ import { useThreadRouteTarget } from "../hooks/useThreadRouteTarget";
 import {
   SidebarSearchResultRow,
   NestedThreadRow,
-  SidebarSettledGroupRow,
+  SidebarFinishedGroupRow,
   SortableThreadRow,
   type SidebarProviderEntry,
   type SidebarSweepAction,
@@ -474,7 +473,6 @@ function useSidebarThreads(input: {
   // Closed shelves keep the open thread's own listed row, so opening a fork never moves it.
   const routeListedKey = input.routeListedThreadKey;
   const threadLineageExpandedById = useUiStateStore((store) => store.threadLineageExpandedById);
-  const localLastVisitedAtById = useUiStateStore((store) => store.threadLastVisitedAtById);
   // Folders already separate the work, so boring mode has no Working shelf.
   const workingShelfEnabled =
     useClientSettings((s) => s.sidebarWorkingShelfEnabled) && folderGroups === null;
@@ -626,17 +624,15 @@ function useSidebarThreads(input: {
     ownRows(settledThreads).length + olderSettledShelf.unloadedCount(partition.visibleThreads);
   const projectFolders =
     placedFolders?.map((folder) => ({ ...folder, threads: topLevelOnly(folder.threads) })) ?? null;
-  // The shelves' own rule, where the partition already placed the thread. An unseen completion
-  // stays in view; local visit marks only matter on servers that do not record visits.
-  const isSettledAndSeen = (thread: EnvironmentThreadShell) =>
-    (sectionOf.get(threadShellKey(thread)) ??
-      resolveSidebarThreadSection(thread, {
-        configLoaded: serverConfigs.has(thread.environmentId),
-        now: partition.snoozeNow,
-      })) === "settled" &&
-    !hasUnseenCompletion({
-      ...thread,
-      lastVisitedAt: resolveThreadLastVisitedAt(thread.lastVisitedAt, undefined),
+  // The shelves' own rule, where the partition already placed the thread.
+  const isFinishedChild = (thread: EnvironmentThreadShell) =>
+    isSidebarLineageChildFinished(thread, {
+      section:
+        sectionOf.get(threadShellKey(thread)) ??
+        resolveSidebarThreadSection(thread, {
+          configLoaded: serverConfigs.has(thread.environmentId),
+          now: partition.snoozeNow,
+        }),
     });
   const lineageRows = flattenSidebarLineage({
     roots: [
@@ -651,37 +647,33 @@ function useSidebarThreads(input: {
     forest: lineageForest,
     expandedByKey: threadLineageExpandedById,
     unloadedParentKeys,
-    isSettled: isSettledAndSeen,
+    isFinished: isFinishedChild,
     routeKey: routeLineageKey,
   });
   const threadRows = lineageRows.filter((row) => row.kind === "thread");
   const orderedThreads = threadRows.map((row) => row.thread);
   const lineageRowByKey = new Map(threadRows.map((row) => [row.key, row] as const));
-  // A closed parent says what it hides, unless the shell left its children out.
+  // A closed parent says what it still has going, unless the shell left its children out.
   const lineageHiddenByKey = new Map(
-    threadRows.flatMap((row) =>
-      !row.expandable || row.expanded || unloadedParentKeys.has(row.key)
-        ? []
-        : [
-            [
-              row.key,
-              {
-                count: lineageForest.childrenByKey.get(row.key)?.length ?? 0,
-                dot: resolveSidebarFolderDot(
-                  sidebarLineageDescendants(row.key, lineageForest)
-                    .filter((thread) => !isSettledAndSeen(thread))
-                    .map((thread) => ({
-                      ...thread,
-                      lastVisitedAt: resolveThreadLastVisitedAt(
-                        thread.lastVisitedAt,
-                        localLastVisitedAtById[threadShellKey(thread)],
-                      ),
-                    })),
-                ),
-              },
-            ] as const,
-          ],
-    ),
+    threadRows.flatMap((row) => {
+      if (!row.expandable || row.expanded || unloadedParentKeys.has(row.key)) return [];
+      const activeChildren = (lineageForest.childrenByKey.get(row.key) ?? []).filter(
+        (thread) => !isFinishedChild(thread),
+      );
+      return [
+        [
+          row.key,
+          {
+            count: activeChildren.length === 0 ? undefined : activeChildren.length,
+            dot: resolveSidebarFolderDot(
+              sidebarLineageDescendants(row.key, lineageForest).filter(
+                (thread) => !isFinishedChild(thread),
+              ),
+            ),
+          },
+        ] as const,
+      ];
+    }),
   );
   const nestedRowsByTopKey = new Map<string, SidebarLineageRow<EnvironmentThreadShell>[]>();
   let nestedRows: SidebarLineageRow<EnvironmentThreadShell>[] = [];
@@ -3527,8 +3519,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         return [
                           renderThreadTreeRow(thread, section, folderRow),
                           ...nestedRows.map((row) =>
-                            row.kind === "settledGroup" ? (
-                              <SidebarSettledGroupRow
+                            row.kind === "finishedGroup" ? (
+                              <SidebarFinishedGroupRow
                                 key={row.key}
                                 row={row}
                                 variant={rowVariantFor(section, folderRow)}
