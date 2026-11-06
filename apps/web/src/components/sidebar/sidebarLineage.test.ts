@@ -328,7 +328,7 @@ describe("flattenSidebarLineage", () => {
     ).toEqual(["root", "  waiting", "    running", "  viewed", "    route", "  1 idle"]);
   });
 
-  it("folds every provider subagent into a group between the other children and the idle group", () => {
+  it("folds provider subagents without live work into a group between the other children and the idle group", () => {
     const at = (day: number) => `2026-01-0${day}T00:00:00.000Z`;
     const threads = [
       thread("root"),
@@ -346,7 +346,8 @@ describe("flattenSidebarLineage", () => {
       "root",
       "  worker",
       "  fork",
-      "  3 subagents",
+      "  sub-live",
+      "  2 subagents",
       "  1 idle",
     ]);
     const { rows } = tree(threads, {
@@ -357,11 +358,11 @@ describe("flattenSidebarLineage", () => {
       ["root", key("root"), null, []],
       ["worker", key("worker"), key("root"), [true]],
       ["fork", key("fork"), key("root"), [true]],
-      ["3 subagents", subagentsKey, key("root"), [true]],
+      ["sub-live", key("sub-live"), key("root"), [true]],
+      ["2 subagents", subagentsKey, key("root"), [true]],
       ["sub-early", key("sub-early"), subagentsKey, [true, true]],
-      ["sub-late", key("sub-late"), subagentsKey, [true, true]],
-      ["sub-child", key("sub-child"), key("sub-late"), [true, true, false]],
-      ["sub-live", key("sub-live"), subagentsKey, [true, false]],
+      ["sub-late", key("sub-late"), subagentsKey, [true, false]],
+      ["sub-child", key("sub-child"), key("sub-late"), [true, false, false]],
       ["1 idle", `${key("root")}:idle`, key("root"), [false]],
     ]);
   });

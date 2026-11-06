@@ -242,15 +242,16 @@ export function flattenSidebarLineage<T extends SidebarLineageThread>(input: {
   }
   const groupOf = (child: T): SidebarLineageGroup | null => {
     const key = keyOf(child);
-    if (onRoute.has(key)) return null;
+    // Live work stays in view whatever its kind, so a closed group never hides it.
+    if (onRoute.has(key) || isLiveSubagentShell(child.source) || hasLiveDescendant(key)) {
+      return null;
+    }
     const kind = sidebarLineageKind({
       lineage: child.lineage,
       creationSource: child.source.creationSource,
     });
     if (kind === "providerSubagent") return "subagents";
-    return isFinished(child) && !isLiveSubagentShell(child.source) && !hasLiveDescendant(key)
-      ? "idle"
-      : null;
+    return isFinished(child) ? "idle" : null;
   };
 
   const rows: SidebarLineageRow<T>[] = [];
