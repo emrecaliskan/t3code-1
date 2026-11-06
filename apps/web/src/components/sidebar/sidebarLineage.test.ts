@@ -6,6 +6,7 @@ import {
   flattenSidebarLineage,
   resolveSidebarLineageRowKey,
   sidebarLineageDescendants,
+  sidebarLineageKind,
   sidebarLineageRowTitle,
   sidebarLineageTopKey,
   sidebarFinishedGroupKey,
@@ -339,6 +340,27 @@ describe("resolveSidebarLineageRowKey", () => {
     expect(resolveSidebarLineageRowKey(key("grandchild"), forest, rendered)).toBe(key("child"));
     expect(resolveSidebarLineageRowKey(key("elsewhere"), forest, rendered)).toBeNull();
     expect(sidebarLineageTopKey(key("grandchild"), forest)).toBe(key("root"));
+  });
+});
+
+describe("sidebarLineageKind", () => {
+  it.each([
+    ["subagent", "mcp", "worker"],
+    ["subagent", "provider", "providerSubagent"],
+    ["fork", "web", "fork"],
+    [null, "web", null],
+  ] as const)("reads a %s child created by %s as %s", (relationship, creationSource, expected) => {
+    const lead = ThreadId.make("lead");
+    expect(
+      sidebarLineageKind({
+        lineage: {
+          parentThreadId: relationship === null ? null : lead,
+          relationshipToParent: relationship,
+          rootThreadId: lead,
+        },
+        creationSource,
+      }),
+    ).toBe(expected);
   });
 });
 

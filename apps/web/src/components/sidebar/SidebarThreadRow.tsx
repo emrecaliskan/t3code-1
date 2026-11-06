@@ -4,7 +4,6 @@ import { discardComposerDraft } from "../../lib/discardComposerDraft";
 import { requestCustomSnooze } from "../CustomSnoozeDialog";
 import { useSupportsMultiplePullRequests } from "~/hooks/useSupportsMultiplePullRequests";
 import { useDeadlinePassed } from "~/hooks/useDeadline";
-import { resolveThreadCurrentPullRequestLink } from "@t3tools/client-runtime/thread-pull-requests";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import {
@@ -33,6 +32,7 @@ import {
   AlarmClockIcon,
   AlarmClockOffIcon,
   ArrowRightLeftIcon,
+  BotIcon,
   CheckIcon,
   ChevronDownIcon,
   CircleAlertIcon,
@@ -41,15 +41,18 @@ import {
   CircleDotDashedIcon,
   ClockIcon,
   GitBranchIcon,
+  GitForkIcon,
   MessageCircleQuestionIcon,
   PinIcon,
   PinOffIcon,
   ShieldQuestionIcon,
+  SparklesIcon,
   SquarePenIcon,
   TerminalIcon,
   Undo2Icon,
   UserRoundIcon,
   XIcon,
+  type LucideIcon,
 } from "lucide-react";
 import {
   memo,
@@ -81,6 +84,7 @@ import {
   hasUnseenCompletion,
   resolveSidebarRowAccessibility,
   type SidebarDropVerb,
+  resolveSidebarRowPullRequest,
   resolveSidebarThreadStatus,
   resolveSidebarWaitingLabel,
   describeSidebarWaiting,
@@ -107,7 +111,6 @@ import {
   ThreadPullRequestsMiniList,
   ThreadWorktreeIndicator,
   prStatusIndicator,
-  resolveThreadPullRequestBadge,
   terminalStatusFromRunningIds,
   type TerminalStatusIndicator,
   useLinkedThreadPullRequest,
@@ -128,7 +131,12 @@ import { Menu, MenuItem, MenuItemDetail, MenuPopup, MenuSeparator, MenuTrigger }
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
 import { MiddleTruncate } from "../ui/middle-truncate";
 import { useThreadHasUnsentDraft } from "../../composerDraftStore";
-import { sidebarLineageRowTitle, type SidebarLineageFinishedGroupRow } from "./sidebarLineage";
+import {
+  sidebarLineageKind,
+  sidebarLineageRowTitle,
+  type SidebarLineageFinishedGroupRow,
+  type SidebarLineageKind,
+} from "./sidebarLineage";
 
 // The fields thread rows show. Provider status pushes refresh `checkedAt`,
 // status and auth on every provider; leaving those out keeps each
@@ -242,6 +250,42 @@ function SidebarProviderStack(props: {
   );
 }
 
+const LINEAGE_KIND: Record<SidebarLineageKind, { Icon: LucideIcon; label: string }> = {
+  worker: { Icon: BotIcon, label: "T3 worker" },
+  // Stands in when the row's provider is unknown.
+  providerSubagent: { Icon: SparklesIcon, label: "Subagent" },
+  fork: { Icon: GitForkIcon, label: "Fork" },
+};
+
+function lineageKindLabel(kind: SidebarLineageKind, providerEntry: SidebarProviderEntry | null) {
+  return kind === "providerSubagent" && providerEntry !== null
+    ? `${providerEntry.displayName} subagent`
+    : LINEAGE_KIND[kind].label;
+}
+
+function LineageKindIcon(props: {
+  kind: SidebarLineageKind;
+  providerEntry: SidebarProviderEntry | null;
+  className: string;
+  /** Tones the lucide glyphs; provider icons keep their own colours. */
+  glyphClassName: string;
+}) {
+  const { kind, providerEntry } = props;
+  if (kind === "providerSubagent" && providerEntry !== null) {
+    return (
+      <ProviderInstanceIcon
+        driverKind={providerEntry.driverKind}
+        displayName={providerEntry.displayName}
+        acpRegistryAgentId={providerEntry.acpRegistryAgentId}
+        acpRegistryIconUrl={providerEntry.acpRegistryIconUrl}
+        iconClassName={props.className}
+      />
+    );
+  }
+  const { Icon } = LINEAGE_KIND[kind];
+  return <Icon aria-hidden className={cn(props.className, props.glyphClassName)} />;
+}
+
 function SidebarThreadTooltip({
   thread,
   project,
@@ -257,6 +301,7 @@ function SidebarThreadTooltip({
   terminalStatus,
   terminalProcessCount,
   waiting,
+  lineage,
 }: {
   thread: SidebarThreadSummary;
   project: ProjectFaviconProject | null;
@@ -275,6 +320,7 @@ function SidebarThreadTooltip({
   terminalStatus: TerminalStatusIndicator | null;
   terminalProcessCount: number;
   waiting: SidebarWaitingLabel | null;
+  lineage: { kind: SidebarLineageKind; parentTitle: string | undefined } | null;
 }) {
   const driverKind = providerEntry?.driverKind ?? null;
   const previousProviderNames = thread.providerInstanceHistory
@@ -293,6 +339,21 @@ function SidebarThreadTooltip({
           ) : null
         }
       >
+        {lineage ? (
+          <div className="flex min-w-0 items-center gap-2">
+            <LineageKindIcon
+              kind={lineage.kind}
+              providerEntry={providerEntry}
+              className="size-3 shrink-0"
+              glyphClassName="stroke-muted-foreground"
+            />
+            <div className="min-w-0 truncate text-foreground/75">
+              {lineage.parentTitle === undefined
+                ? lineageKindLabel(lineage.kind, providerEntry)
+                : `${lineageKindLabel(lineage.kind, providerEntry)} of ${lineage.parentTitle}`}
+            </div>
+          </div>
+        ) : null}
         {projectDisplayName ? (
           <div className="flex min-w-0 items-center gap-2">
             {project ? <ProjectFavicon project={project} className="size-3 shrink-0" /> : null}
@@ -1027,13 +1088,24 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   );
   const pr = linkedPullRequestStatus?.pr ?? null;
   const supportsMultiplePullRequests = useSupportsMultiplePullRequests(thread.environmentId);
-  const currentLinkedPr = supportsMultiplePullRequests
-    ? resolveThreadCurrentPullRequestLink(thread.pullRequests)
-    : null;
 
   const isUnread = hasUnseenCompletion({ ...thread, lastVisitedAt });
   const status = resolveSidebarThreadStatus(thread);
   const waiting = status === "waiting" ? resolveSidebarWaitingLabel(thread) : null;
+  const rowPullRequest = resolveSidebarRowPullRequest({
+    pullRequests: thread.pullRequests,
+    supportsMultiplePullRequests,
+    livePullRequest: pr,
+    waiting,
+  });
+  // Rows without the meta line show the PR after the title, unless their waiting label names it.
+  const oneLineLayout = variant === "card" ? null : ONE_LINE_ROW_LAYOUT[variant];
+  const titlePullRequest =
+    oneLineLayout === null ||
+    oneLineLayout.twoLines ||
+    (oneLineLayout.statusInTimeSlot && rowPullRequest?.repeatsWaitingLabel)
+      ? null
+      : rowPullRequest;
   const isProviderNative = isProviderNativeSubagentThread(thread.source);
   const lastVisitedDate = lastVisitedAt === undefined ? null : parseTimestampDate(lastVisitedAt);
   const wokeAtDate = props.wokeAt === null ? null : parseTimestampDate(props.wokeAt);
@@ -1130,6 +1202,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const modelLabel = selectedModel
     ? getTriggerDisplayModelName(selectedModel, providerEntry?.driverKind)
     : thread.modelSelection.model;
+  const lineageDepth = props.lineageDepth ?? 0;
+  // A nested row's kind replaces its favicon, which only repeats its parent's project.
+  const lineageKind = lineageDepth > 0 ? sidebarLineageKind(thread.source) : null;
 
   const isRemote = thread.environmentId !== props.currentEnvironmentId;
   const showsScratchMachine = !thread.branch && props.scratchMachineLabel !== null;
@@ -1150,6 +1225,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       terminalStatus={terminalStatus}
       terminalProcessCount={terminalProcessCount}
       waiting={waiting}
+      lineage={
+        lineageKind === null ? null : { kind: lineageKind, parentTitle: props.lineageParentTitle }
+      }
     />
   );
 
@@ -1267,7 +1345,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
   const snoozeMenuOpen = snoozeMenuOpenRaw && showSnoozeButton;
   const jumpHintLabel = snoozeMenuOpen ? null : props.jumpLabel;
   const handlePrClick = (event: ReactMouseEvent<HTMLElement>, targetUrl?: string) => {
-    const url = targetUrl ?? pr?.url ?? currentLinkedPr?.url;
+    const url = targetUrl ?? rowPullRequest?.url;
     if (!url) return;
     const showInRightPanel = targetUrl !== undefined || openPullRequestsInRightPanel;
     const openedInRightPanel = openPrLink(event, url, showInRightPanel ? threadRef : undefined);
@@ -1315,7 +1393,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
         ...sortable.listeners,
       }
     : {};
-  const lineageDepth = props.lineageDepth ?? 0;
   const lineageRootProps =
     lineageDepth > 0
       ? { style: { paddingInlineStart: lineageSpacing(lineageDepth * LINEAGE_INDENT) } }
@@ -1400,7 +1477,9 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
 
   const accessibility = resolveSidebarRowAccessibility({
     title: rowTitle,
+    lineageLabel: lineageKind === null ? null : lineageKindLabel(lineageKind, providerEntry),
     statusLabel: waiting !== null ? describeSidebarWaiting(waiting) : (topStatus?.label ?? null),
+    pullRequestNumber: titlePullRequest?.number,
     projectDisplayName: props.projectDisplayName,
     isActive: props.isActive,
   });
@@ -1419,7 +1498,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       aria-hidden
       className={cn(
         "min-w-0 text-start text-sm transition-opacity motion-reduce:transition-none",
-        props.lineageExpanded == null ? "flex-1" : "flex-initial",
+        props.lineageExpanded == null && titlePullRequest === null ? "flex-1" : "flex-initial",
         titleRecedes ? "font-normal" : "font-medium",
         variant === "card" || !ONE_LINE_ROW_LAYOUT[variant].quiet
           ? cn(
@@ -1447,40 +1526,34 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       {rowTitle}
     </span>
   );
-  const providerNativeIcon =
-    isProviderNative && providerEntry !== null ? (
-      <span aria-hidden className="inline-flex shrink-0 items-center">
-        <ProviderInstanceIcon
-          driverKind={providerEntry.driverKind}
-          displayName={providerEntry.displayName}
-          acpRegistryAgentId={providerEntry.acpRegistryAgentId}
-          acpRegistryIconUrl={providerEntry.acpRegistryIconUrl}
-          iconClassName="size-3 grayscale opacity-60"
-        />
-      </span>
-    ) : null;
+  const lineageKindIcon =
+    lineageKind === null ? null : (
+      <LineageKindIcon
+        kind={lineageKind}
+        providerEntry={providerEntry}
+        className="size-4 shrink-0"
+        glyphClassName="text-sidebar-muted-foreground"
+      />
+    );
   const accessibleTitle = isRenaming ? null : <span className="sr-only">{rowTitle}</span>;
 
-  const prBadgeShape = supportsMultiplePullRequests
-    ? resolveThreadPullRequestBadge(thread.pullRequests)
-    : null;
   const handlePrListClick = () => {
     useRightPanelStore.getState().open(threadRef, "pull-requests");
     if (!props.isRouteThread) onThreadActivate(threadRef);
   };
   const prBadge =
-    prBadgeShape?.kind === "stack" || pr || currentLinkedPr ? (
+    rowPullRequest === null ? null : (
       <ThreadPullRequestBadgeControl
         render={<InlineButton />}
-        badge={prBadgeShape}
+        badge={rowPullRequest.badge}
         pullRequests={thread.pullRequests}
-        number={pr?.number ?? currentLinkedPr?.number}
-        url={pr?.url ?? currentLinkedPr?.url}
+        number={rowPullRequest.number}
+        url={rowPullRequest.url}
         status={prStatus}
         onOpenList={handlePrListClick}
         onOpenPullRequest={handlePrClick}
       />
-    ) : null;
+    );
   const terminalStatusIcon = (
     <ThreadTerminalStatusButton
       threadRef={threadRef}
@@ -1651,7 +1724,7 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
             {/* `contents` keeps one-line rows a single flex row. */}
             <div className={layout.twoLines ? "flex h-6 min-w-0 items-center gap-2.5" : "contents"}>
               {accessibleTitle}
-              {layout.inFolder ? null : (
+              {layout.inFolder && lineageKindIcon === null ? null : (
                 <span
                   className={cn(
                     "flex shrink-0 items-center transition-opacity",
@@ -1660,15 +1733,19 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
                       "opacity-40 grayscale group-focus-within/sidebar-row:opacity-100 group-focus-within/sidebar-row:grayscale-0 group-hover/sidebar-row:opacity-100 group-hover/sidebar-row:grayscale-0",
                   )}
                 >
-                  {props.project ? (
-                    <ProjectFavicon project={props.project} className="size-4" />
-                  ) : null}
+                  {lineageKindIcon ??
+                    (props.project ? (
+                      <ProjectFavicon project={props.project} className="size-4" />
+                    ) : null)}
                 </span>
               )}
               {draftIndicator}
-              {providerNativeIcon}
               {title}
               {lineageToggle}
+              {titlePullRequest === null ? null : (
+                // Grows in the title's place, so the title truncates first and the chip stays beside it.
+                <span className="flex shrink-0 grow items-center">{prBadge}</span>
+              )}
               {layout.twoLines ? titleLineIcons : null}
               {pinIndicator}
               {layout.twoLines ? null : terminalStatusIcon}
@@ -1858,9 +1935,10 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
           >
             <div className="flex h-5 min-w-0 items-center gap-1.5">
               {draftIndicator}
-              {props.project ? (
-                <ProjectFavicon project={props.project} className="size-4 shrink-0" />
-              ) : null}
+              {lineageKindIcon ??
+                (props.project ? (
+                  <ProjectFavicon project={props.project} className="size-4 shrink-0" />
+                ) : null)}
               {/* Left of the status slot, the pin would slide when hover swaps the
                 label for the wider row controls. */}
               {pinIndicator}
@@ -2007,7 +2085,6 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
               {props.sweepAction !== null ? dragDestination : null}
             </div>
             <div className="mt-1 flex min-w-0 items-center gap-1.5">
-              {providerNativeIcon}
               {title}
               {lineageToggle}
               {isRegeneratingTitle ? (
@@ -2213,6 +2290,7 @@ export const SidebarSearchResultRow = memo(function SidebarSearchResultRow(props
           terminalStatus={terminalStatus}
           terminalProcessCount={runningTerminalIds.length}
           waiting={null}
+          lineage={null}
         />
       </Tooltip>
     </li>

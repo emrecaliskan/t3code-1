@@ -1,6 +1,11 @@
 import { scopeThreadRef, scopedThreadKey } from "@t3tools/client-runtime/environment";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/models";
-import { isListedThreadLineage, isLiveSubagentShell, type ThreadId } from "@t3tools/contracts";
+import {
+  isListedThreadLineage,
+  isLiveSubagentShell,
+  isProviderNativeSubagentThread,
+  type ThreadId,
+} from "@t3tools/contracts";
 
 export type SidebarLineageThread = Pick<
   EnvironmentThreadShell,
@@ -8,6 +13,22 @@ export type SidebarLineageThread = Pick<
 > & {
   readonly source: Parameters<typeof isLiveSubagentShell>[0];
 };
+
+/** How a nested row came from its parent: a T3 worker, a provider's own subagent, or a fork. */
+export type SidebarLineageKind = "worker" | "providerSubagent" | "fork";
+
+export function sidebarLineageKind(
+  source: Parameters<typeof isProviderNativeSubagentThread>[0],
+): SidebarLineageKind | null {
+  switch (source.lineage.relationshipToParent) {
+    case "fork":
+      return "fork";
+    case "subagent":
+      return isProviderNativeSubagentThread(source) ? "providerSubagent" : "worker";
+    case null:
+      return null;
+  }
+}
 
 /** Which candidate rows render under which parent, by thread key. */
 export interface SidebarLineageForest<T> {

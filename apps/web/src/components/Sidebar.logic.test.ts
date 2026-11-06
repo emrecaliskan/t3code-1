@@ -13,6 +13,7 @@ import {
   resolveSidebarRowThreadId,
   orderItemsByPreferredIds,
   pinOrderKeyBetween,
+  resolveSidebarRowPullRequest,
   resolveSidebarSweepKeys,
   resolveSidebarThreadStatus,
   resolveSidebarWaitingLabel,
@@ -968,6 +969,46 @@ describe("unseen completion with background work", () => {
   });
 });
 
+const watch = {
+  startedAt: "2026-11-01T00:00:00.000Z",
+  headSha: null,
+  failedChecks: [],
+  passed: false,
+  passedChecks: [],
+  remarksThrough: "2026-11-01T00:00:00.000Z",
+  remarkIds: [],
+  conflicting: false,
+  wakes: 0,
+};
+const pullRequest = (
+  number: number,
+  snapshot: Partial<ThreadPullRequestSnapshot> | null,
+  extra: { watched?: false; source?: ThreadPullRequestLink["source"] } = {},
+) =>
+  ({
+    host: "github.com",
+    repository: "acme/app",
+    number,
+    url: `https://github.com/acme/app/pull/${number}`,
+    source: extra.source ?? "agent",
+    linkedAt: "2026-11-01T00:00:00.000Z",
+    snapshot:
+      snapshot === null
+        ? null
+        : {
+            state: "open",
+            title: "Land it",
+            headBranch: "feature",
+            baseBranch: "main",
+            isDraft: false,
+            updatedAt: null,
+            syncedAt: "2026-11-01T00:00:00.000Z",
+            ...snapshot,
+          },
+    stack: null,
+    ...(extra.watched === false ? {} : { watch }),
+  }) as ThreadPullRequestLink;
+
 describe("resolveSidebarWaitingLabel", () => {
   const subagent = (taskId: string, description: string) =>
     ({ taskId, kind: "subagent", description, awaited: true }) as const;
@@ -1012,45 +1053,6 @@ describe("resolveSidebarWaitingLabel", () => {
     }).toEqual(expected);
   });
 
-  const watch = {
-    startedAt: "2026-11-01T00:00:00.000Z",
-    headSha: null,
-    failedChecks: [],
-    passed: false,
-    passedChecks: [],
-    remarksThrough: "2026-11-01T00:00:00.000Z",
-    remarkIds: [],
-    conflicting: false,
-    wakes: 0,
-  };
-  const pullRequest = (
-    number: number,
-    snapshot: Partial<ThreadPullRequestSnapshot> | null,
-    extra: { watched?: false; source?: ThreadPullRequestLink["source"] } = {},
-  ) =>
-    ({
-      host: "github.com",
-      repository: "acme/app",
-      number,
-      url: `https://github.com/acme/app/pull/${number}`,
-      source: extra.source ?? "agent",
-      linkedAt: "2026-11-01T00:00:00.000Z",
-      snapshot:
-        snapshot === null
-          ? null
-          : {
-              state: "open",
-              title: "Land it",
-              headBranch: "feature",
-              baseBranch: "main",
-              isDraft: false,
-              updatedAt: null,
-              syncedAt: "2026-11-01T00:00:00.000Z",
-              ...snapshot,
-            },
-      stack: null,
-      ...(extra.watched === false ? {} : { watch }),
-    }) as ThreadPullRequestLink;
   const watchTask = (link: ThreadPullRequestLink) =>
     ({
       taskId: pullRequestWatchTaskId(link),
@@ -1111,6 +1113,81 @@ describe("resolveSidebarWaitingLabel", () => {
       otherItems:
         waiting.kind === "pullRequest" ? waiting.otherItems.map((item) => item.label) : null,
     }).toEqual(input.expected);
+  });
+});
+
+describe("resolveSidebarRowPullRequest", () => {
+  const lead = pullRequest(9777, { headBranch: "lead" }, { watched: false });
+  const other = pullRequest(9778, { headBranch: "other" }, { watched: false });
+  const watched = pullRequest(9779, { headBranch: "watched" });
+  const waitingOn = (pullRequests: ThreadPullRequestLink[]) =>
+    resolveSidebarWaitingLabel({ pendingBackgroundTasks: [], pullRequests });
+
+  it.each([
+    {
+      shows: "its one link",
+      pullRequests: [lead],
+      expected: {
+        badge: { kind: "pull-request", others: 0, state: "open" },
+        number: 9777,
+        repeatsWaitingLabel: false,
+      },
+    },
+    {
+      shows: "the current link and counts the others",
+      pullRequests: [lead, other],
+      expected: {
+        badge: { kind: "pull-request", others: 1, state: "open" },
+        number: 9777,
+        repeatsWaitingLabel: false,
+      },
+    },
+    {
+      shows: "no pull request when the environment reads one link only",
+      pullRequests: [lead, other],
+      supportsMultiplePullRequests: false,
+      expected: null,
+    },
+    {
+      shows: "the live pull request when the environment reads one link only",
+      pullRequests: [lead],
+      supportsMultiplePullRequests: false,
+      livePullRequest: { number: 9700, url: "https://github.com/acme/app/pull/9700" },
+      expected: { badge: null, number: 9700, repeatsWaitingLabel: false },
+    },
+    { shows: "no pull request without links", pullRequests: [], expected: null },
+    {
+      shows: "the pull request its waiting label names",
+      pullRequests: [watched],
+      waiting: [watched],
+      expected: {
+        badge: { kind: "pull-request", others: 0, state: "open" },
+        number: 9779,
+        repeatsWaitingLabel: true,
+      },
+    },
+    {
+      shows: "a count beside the pull request its waiting label names",
+      pullRequests: [watched, lead],
+      waiting: [watched],
+      expected: {
+        badge: { kind: "pull-request", others: 1, state: "open" },
+        number: 9779,
+        repeatsWaitingLabel: false,
+      },
+    },
+  ])("shows $shows", (input) => {
+    const row = resolveSidebarRowPullRequest({
+      pullRequests: input.pullRequests,
+      supportsMultiplePullRequests: input.supportsMultiplePullRequests ?? true,
+      livePullRequest: input.livePullRequest ?? null,
+      waiting: input.waiting === undefined ? null : waitingOn(input.waiting),
+    });
+    expect(
+      row === null
+        ? null
+        : { badge: row.badge, number: row.number, repeatsWaitingLabel: row.repeatsWaitingLabel },
+    ).toEqual(input.expected);
   });
 });
 

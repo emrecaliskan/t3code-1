@@ -191,7 +191,7 @@ function resolveThreadPullRequestBadgePresentation({
       Icon: aggregate.Icon,
       toneClassName: aggregate.toneClassName,
       label: `${tooltip}, and ${badge.others} more linked; overall ${aggregate.label.toLowerCase()}`,
-      text: `+${badge.others + 1}`,
+      text: `${number} +${badge.others}`,
     };
   }
   return {

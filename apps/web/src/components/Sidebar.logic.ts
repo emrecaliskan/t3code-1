@@ -14,6 +14,11 @@ import {
   watchedPullRequests,
 } from "@t3tools/shared/orchestrationV2PendingBackgroundWork";
 import { threadPullRequestSearchTerms } from "@t3tools/shared/threadPullRequests";
+import {
+  resolveThreadCurrentPullRequestLink,
+  resolveThreadPullRequestBadge,
+  type ThreadPullRequestBadge,
+} from "@t3tools/client-runtime/thread-pull-requests";
 import * as React from "react";
 import {
   isAtomCommandInterrupted,
@@ -75,12 +80,24 @@ const THREAD_JUMP_HINT_SHOW_DELAY_MS = 200;
 
 export function resolveSidebarRowAccessibility(input: {
   readonly title: string;
+  readonly lineageLabel?: string | null;
   readonly statusLabel: string | null;
+  readonly pullRequestNumber?: number | null | undefined;
   readonly projectDisplayName: string | null;
   readonly isActive: boolean;
 }): { readonly label: string; readonly current: "page" | undefined } {
+  const pullRequestLabel =
+    input.pullRequestNumber == null ? null : `pull request #${input.pullRequestNumber}`;
   return {
-    label: [input.title, input.statusLabel, input.projectDisplayName].filter(Boolean).join(", "),
+    label: [
+      input.title,
+      input.lineageLabel,
+      input.statusLabel,
+      pullRequestLabel,
+      input.projectDisplayName,
+    ]
+      .filter(Boolean)
+      .join(", "),
     current: input.isActive ? "page" : undefined,
   };
 }
@@ -1060,6 +1077,40 @@ export function describeSidebarWaiting(waiting: SidebarWaitingLabel): string {
   return [`Waiting on pull request #${link.number}`, stage?.label, more]
     .filter((part) => part !== undefined && part !== null)
     .join(", ");
+}
+
+export interface SidebarRowPullRequest {
+  readonly badge: ThreadPullRequestBadge | null;
+  readonly number: number | undefined;
+  readonly url: string | undefined;
+  /** The badge is one pull request, and the waiting label names it first. */
+  readonly repeatsWaitingLabel: boolean;
+}
+
+/** The pull request a row's badge shows, or null when the row shows none. */
+export function resolveSidebarRowPullRequest(input: {
+  readonly pullRequests: ReadonlyArray<ThreadPullRequestLink>;
+  readonly supportsMultiplePullRequests: boolean;
+  /** Live status, which outranks the stored links. */
+  readonly livePullRequest: { readonly number: number; readonly url: string } | null;
+  readonly waiting: SidebarWaitingLabel | null;
+}): SidebarRowPullRequest | null {
+  const { pullRequests, supportsMultiplePullRequests, waiting } = input;
+  const badge = supportsMultiplePullRequests ? resolveThreadPullRequestBadge(pullRequests) : null;
+  const shown =
+    input.livePullRequest ??
+    (supportsMultiplePullRequests ? resolveThreadCurrentPullRequestLink(pullRequests) : null);
+  if (shown === null && badge?.kind !== "stack") return null;
+  const isSingle = badge === null || (badge.kind === "pull-request" && badge.others === 0);
+  return {
+    badge,
+    number: shown?.number,
+    url: shown?.url,
+    repeatsWaitingLabel:
+      isSingle &&
+      waiting?.kind === "pullRequest" &&
+      waiting.pullRequests[0].link.url === shown?.url,
+  };
 }
 
 export const SIDEBAR_FOLDER_DOT_CLASS_NAME = {
