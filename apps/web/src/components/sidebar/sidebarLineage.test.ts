@@ -5,6 +5,7 @@ import {
   buildSidebarLineageForest,
   flattenSidebarLineage,
   resolveSidebarLineageRowKey,
+  sidebarLineageDescendants,
   sidebarLineageRowTitle,
   sidebarLineageTopKey,
   sidebarSettledGroupKey,
@@ -186,6 +187,32 @@ describe("buildSidebarLineageForest", () => {
     ];
     const { shape } = tree(threads, { expanded: { [key("b")]: true, [key("a")]: true } });
     expect(shape.toSorted()).toEqual(["  a", "b", "self"]);
+  });
+});
+
+describe("sidebarLineageDescendants", () => {
+  const nested = tree([
+    thread("root"),
+    thread("child", { parent: "root" }),
+    thread("grandchild", { parent: "child", root: "root" }),
+    thread("sibling", { parent: "root", createdAt: "2026-01-02T00:00:00.000Z" }),
+  ]).forest;
+  const a = thread("a", { parent: "b", relationship: "fork" });
+  const b = thread("b", { parent: "a", relationship: "fork" });
+  const cycle = {
+    childrenByKey: new Map([
+      [key("a"), [b]],
+      [key("b"), [a]],
+    ]),
+  };
+  it.each([
+    ["every level below a parent", nested, "root", ["child", "grandchild", "sibling"]],
+    ["nothing below a leaf", nested, "grandchild", []],
+    ["each thread of a cycle once, never the parent itself", cycle, "a", ["b"]],
+  ])("collects %s", (_case, forest, parent, expected) => {
+    expect(sidebarLineageDescendants(key(parent), forest).map((entry) => entry.id)).toEqual(
+      expected,
+    );
   });
 });
 

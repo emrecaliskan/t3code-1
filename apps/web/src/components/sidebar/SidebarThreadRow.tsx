@@ -88,6 +88,9 @@ import {
   type SidebarWaitingLabel,
   type SidebarWatchedPullRequest,
   resolveThreadLastVisitedAt,
+  SIDEBAR_FOLDER_DOT_CLASS_NAME,
+  SIDEBAR_FOLDER_DOT_LABEL,
+  type SidebarFolderDot,
   shouldRecedeSidebarThread,
   resolveWorkingStartedAt,
   useRetainedValue,
@@ -850,6 +853,9 @@ type SidebarThreadRowProps = {
   lineageGuides?: ReadonlyArray<boolean> | undefined;
   /** Null when the row has no children to show. */
   lineageExpanded?: boolean | null | undefined;
+  /** What a closed parent hides: its direct children, and the most urgent state below it. */
+  lineageHiddenCount?: number | undefined;
+  lineageHiddenDot?: SidebarFolderDot | null | undefined;
   onToggleLineage?: ((threadKey: string, expanded: boolean) => void) | undefined;
   /** The title of the row this one sits under, whose repeated prefix the row hides. */
   lineageParentTitle?: string | undefined;
@@ -1331,21 +1337,50 @@ const SidebarThreadRow = memo(function SidebarThreadRow(props: SidebarThreadRowP
       />
     ) : null;
   const { onToggleLineage } = props;
+  const hiddenCount = lineageExpanded === false ? props.lineageHiddenCount : undefined;
+  const hiddenDot = props.lineageHiddenDot ?? null;
   const lineageToggle =
     lineageExpanded === null || onToggleLineage === undefined ? null : (
       <button
         type="button"
         data-sidebar-toggle
-        aria-label={lineageExpanded ? "Hide child threads" : "Show child threads"}
+        aria-label={
+          lineageExpanded
+            ? "Hide child threads"
+            : hiddenCount === undefined
+              ? "Show child threads"
+              : `Show ${hiddenCount} child ${hiddenCount === 1 ? "thread" : "threads"}${
+                  hiddenDot === null ? "" : SIDEBAR_FOLDER_DOT_LABEL[hiddenDot]
+                }`
+        }
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
           onToggleLineage(threadKey, !lineageExpanded);
         }}
         onPointerDown={(event) => event.stopPropagation()}
-        className="me-auto inline-flex size-4 shrink-0 cursor-pointer items-center justify-center rounded-sm text-sidebar-muted-foreground outline-none hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
+        className={cn(
+          "me-auto inline-flex h-4 min-w-4 shrink-0 cursor-pointer items-center justify-center rounded-sm text-sidebar-muted-foreground outline-none hover:text-sidebar-foreground focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring",
+          hiddenCount !== undefined && "gap-1 ps-0.5 pe-1",
+        )}
       >
         <ChevronDownIcon aria-hidden className={cn("size-3", !lineageExpanded && "-rotate-90")} />
+        {hiddenCount === undefined ? null : (
+          <>
+            {hiddenDot === null ? null : (
+              <span
+                aria-hidden
+                className={cn(
+                  "size-1.5 shrink-0 rounded-full",
+                  SIDEBAR_FOLDER_DOT_CLASS_NAME[hiddenDot],
+                )}
+              />
+            )}
+            <span aria-hidden className="text-xs tabular-nums">
+              {hiddenCount}
+            </span>
+          </>
+        )}
       </button>
     );
   const destinationVerb = sortable?.isDragging

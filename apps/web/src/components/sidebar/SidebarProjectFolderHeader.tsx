@@ -6,24 +6,15 @@ import { memo } from "react";
 import { cn } from "~/lib/utils";
 import type { SidebarProjectSnapshot } from "../../sidebarProjectGrouping";
 import { useUiStateStore } from "../../uiStateStore";
-import { resolveSidebarFolderDot, resolveThreadLastVisitedAt } from "../Sidebar.logic";
+import {
+  resolveSidebarFolderDot,
+  resolveThreadLastVisitedAt,
+  SIDEBAR_FOLDER_DOT_CLASS_NAME,
+  SIDEBAR_FOLDER_DOT_LABEL,
+} from "../Sidebar.logic";
 import { ProjectFavicon } from "../ProjectFavicon";
 import { Button } from "../ui/button";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../ui/tooltip";
-
-const FOLDER_DOT_CLASS_NAME = {
-  attention: "bg-warning",
-  failed: "bg-error",
-  unread: "bg-success",
-  working: "bg-info",
-} as const;
-
-const FOLDER_DOT_LABEL = {
-  attention: ", needs you",
-  failed: ", failed",
-  unread: ", done",
-  working: ", working",
-} as const;
 
 /** The folder's sidebar tree row; its thread rows name it as their parent. */
 export function sidebarFolderRowId(projectKey: string) {
@@ -80,8 +71,10 @@ export const SidebarProjectFolderHeader = memo(function SidebarProjectFolderHead
           {group.displayName}
         </span>
         {dot ? (
-          <span className={cn("size-1.5 shrink-0 rounded-full", FOLDER_DOT_CLASS_NAME[dot])}>
-            <span className="sr-only">{FOLDER_DOT_LABEL[dot]}</span>
+          <span
+            className={cn("size-1.5 shrink-0 rounded-full", SIDEBAR_FOLDER_DOT_CLASS_NAME[dot])}
+          >
+            <span className="sr-only">{SIDEBAR_FOLDER_DOT_LABEL[dot]}</span>
           </span>
         ) : null}
         {collapsed && hiddenThreads.length > 0 ? (

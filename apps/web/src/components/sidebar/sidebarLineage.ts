@@ -153,6 +153,26 @@ export function buildSidebarLineageForest<T extends SidebarLineageThread>(input:
   return { nested: new Set(parentByKey.keys()), parentByKey, childrenByKey: children };
 }
 
+/** Every thread below `key` in the forest, each once, depth first. Cycles are cut where met. */
+export function sidebarLineageDescendants<T extends SidebarLineageThread>(
+  key: string,
+  forest: Pick<SidebarLineageForest<T>, "childrenByKey">,
+): T[] {
+  const visited = new Set([key]);
+  const descendants: T[] = [];
+  const visit = (parentKey: string): void => {
+    for (const child of forest.childrenByKey.get(parentKey) ?? []) {
+      const childKey = keyOf(child);
+      if (visited.has(childKey)) continue;
+      visited.add(childKey);
+      descendants.push(child);
+      visit(childKey);
+    }
+  };
+  visit(key);
+  return descendants;
+}
+
 /**
  * The visible rows under `roots`, in order. A parent the user never toggled starts open while any
  * descendant is live. Settled children fold into one closed group after the others, except one on

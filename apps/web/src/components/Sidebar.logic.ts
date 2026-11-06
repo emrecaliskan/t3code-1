@@ -1050,13 +1050,30 @@ export function describeSidebarWaiting(waiting: SidebarWaitingLabel): string {
     .join(", ");
 }
 
+export const SIDEBAR_FOLDER_DOT_CLASS_NAME = {
+  attention: "bg-warning",
+  failed: "bg-error",
+  unread: "bg-success",
+  working: "bg-info",
+} as const;
+
+/** Appended to what the closed row names, for screen readers. */
+export const SIDEBAR_FOLDER_DOT_LABEL = {
+  attention: ", needs you",
+  failed: ", failed",
+  unread: ", done",
+  working: ", working",
+} as const;
+
+export type SidebarFolderDot = keyof typeof SIDEBAR_FOLDER_DOT_CLASS_NAME;
+
 /**
- * The dot on a closed boring-sidebar folder: the most urgent state among its
- * hidden threads. Waiting threads stay quiet, like their rows.
+ * The dot on a closed boring-sidebar folder or lineage parent: the most urgent
+ * state among its hidden threads. Waiting threads stay quiet, like their rows.
  */
 export function resolveSidebarFolderDot(
   threads: ReadonlyArray<ThreadStatusInput & SidebarThreadStatusInput>,
-): "attention" | "failed" | "unread" | "working" | null {
+): SidebarFolderDot | null {
   const statuses = new Set(threads.map(resolveSidebarThreadStatus));
   if (
     statuses.has("input") ||

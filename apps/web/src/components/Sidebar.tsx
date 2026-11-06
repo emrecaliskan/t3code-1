@@ -162,6 +162,7 @@ import {
   buildSidebarLineageForest,
   flattenSidebarLineage,
   resolveSidebarLineageRowKey,
+  sidebarLineageDescendants,
   sidebarLineageTopKey,
   type SidebarLineageRow,
   type SidebarLineageThreadRow,
@@ -208,6 +209,7 @@ import {
   resolveSidebarSweepKeys,
   resolveSidebarDropTarget,
   resolveSidebarDropVerb,
+  resolveSidebarFolderDot,
   resolveSidebarThreadSection,
   resolveThreadLastVisitedAt,
   resolveSidebarReorderableThreadKeys,
@@ -472,6 +474,7 @@ function useSidebarThreads(input: {
   // Closed shelves keep the open thread's own listed row, so opening a fork never moves it.
   const routeListedKey = input.routeListedThreadKey;
   const threadLineageExpandedById = useUiStateStore((store) => store.threadLineageExpandedById);
+  const localLastVisitedAtById = useUiStateStore((store) => store.threadLastVisitedAtById);
   // Folders already separate the work, so boring mode has no Working shelf.
   const workingShelfEnabled =
     useClientSettings((s) => s.sidebarWorkingShelfEnabled) && folderGroups === null;
@@ -623,6 +626,18 @@ function useSidebarThreads(input: {
     ownRows(settledThreads).length + olderSettledShelf.unloadedCount(partition.visibleThreads);
   const projectFolders =
     placedFolders?.map((folder) => ({ ...folder, threads: topLevelOnly(folder.threads) })) ?? null;
+  // The shelves' own rule, where the partition already placed the thread. An unseen completion
+  // stays in view; local visit marks only matter on servers that do not record visits.
+  const isSettledAndSeen = (thread: EnvironmentThreadShell) =>
+    (sectionOf.get(threadShellKey(thread)) ??
+      resolveSidebarThreadSection(thread, {
+        configLoaded: serverConfigs.has(thread.environmentId),
+        now: partition.snoozeNow,
+      })) === "settled" &&
+    !hasUnseenCompletion({
+      ...thread,
+      lastVisitedAt: resolveThreadLastVisitedAt(thread.lastVisitedAt, undefined),
+    });
   const lineageRows = flattenSidebarLineage({
     roots: [
       ...pinnedThreads,
@@ -636,23 +651,38 @@ function useSidebarThreads(input: {
     forest: lineageForest,
     expandedByKey: threadLineageExpandedById,
     unloadedParentKeys,
-    // The shelves' own rule, where the partition already placed the thread. An unseen completion
-    // stays in view; local visit marks only matter on servers that do not record visits.
-    isSettled: (thread) =>
-      (sectionOf.get(threadShellKey(thread)) ??
-        resolveSidebarThreadSection(thread, {
-          configLoaded: serverConfigs.has(thread.environmentId),
-          now: partition.snoozeNow,
-        })) === "settled" &&
-      !hasUnseenCompletion({
-        ...thread,
-        lastVisitedAt: resolveThreadLastVisitedAt(thread.lastVisitedAt, undefined),
-      }),
+    isSettled: isSettledAndSeen,
     routeKey: routeLineageKey,
   });
   const threadRows = lineageRows.filter((row) => row.kind === "thread");
   const orderedThreads = threadRows.map((row) => row.thread);
   const lineageRowByKey = new Map(threadRows.map((row) => [row.key, row] as const));
+  // A closed parent says what it hides, unless the shell left its children out.
+  const lineageHiddenByKey = new Map(
+    threadRows.flatMap((row) =>
+      !row.expandable || row.expanded || unloadedParentKeys.has(row.key)
+        ? []
+        : [
+            [
+              row.key,
+              {
+                count: lineageForest.childrenByKey.get(row.key)?.length ?? 0,
+                dot: resolveSidebarFolderDot(
+                  sidebarLineageDescendants(row.key, lineageForest)
+                    .filter((thread) => !isSettledAndSeen(thread))
+                    .map((thread) => ({
+                      ...thread,
+                      lastVisitedAt: resolveThreadLastVisitedAt(
+                        thread.lastVisitedAt,
+                        localLastVisitedAtById[threadShellKey(thread)],
+                      ),
+                    })),
+                ),
+              },
+            ] as const,
+          ],
+    ),
+  );
   const nestedRowsByTopKey = new Map<string, SidebarLineageRow<EnvironmentThreadShell>[]>();
   let nestedRows: SidebarLineageRow<EnvironmentThreadShell>[] = [];
   for (const row of lineageRows) {
@@ -693,6 +723,7 @@ function useSidebarThreads(input: {
     routeTopThreadKey:
       routeListedKey === null ? null : sidebarLineageTopKey(routeListedKey, lineageForest),
     lineageRowByKey,
+    lineageHiddenByKey,
     nestedRowsByTopKey,
     searchableThreads: [
       ...partition.pinnedThreads,
@@ -1462,6 +1493,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     routeRowThreadKey,
     routeTopThreadKey,
     lineageRowByKey,
+    lineageHiddenByKey,
     nestedRowsByTopKey,
   } = useSidebarThreads({
     projectScopeKey,
@@ -3529,6 +3561,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                         const lineage = nested ?? lineageRowByKey.get(threadKey);
                         const RowComponent = nested ? NestedThreadRow : SortableThreadRow;
                         const rowVariant = rowVariantFor(section, folderRow);
+                        const lineageHidden = lineageHiddenByKey.get(threadKey);
                         return (
                           <RowComponent
                             key={threadKey}
@@ -3545,6 +3578,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                             lineageDepth={lineage?.depth}
                             lineageGuides={lineage?.guides}
                             lineageExpanded={lineage?.expandable ? lineage.expanded : null}
+                            lineageHiddenCount={lineageHidden?.count}
+                            lineageHiddenDot={lineageHidden?.dot}
                             onToggleLineage={setThreadLineageExpanded}
                             lineageParentTitle={parentTitle}
                             navigationParent={
