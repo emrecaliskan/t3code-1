@@ -254,14 +254,12 @@ function trimShellSnapshot(
     ...base,
     threads: kept,
     ...(older === null ? {} : { olderSettled: older.olderSettled }),
-    ...(options.omitIdleSubagents
-      ? { idleSubagentParentIds: omittedSubagentParentIds(rows, kept) }
-      : {}),
+    omittedChildParentIds: omittedChildParents(rows, kept),
   };
 }
 
-/** Parents with a subagent child among `rows` that `kept` leaves out. */
-function omittedSubagentParentIds(
+/** Parents with a subagent or fork child among `rows` that `kept` leaves out. */
+function omittedChildParents(
   rows: ReadonlyArray<ShellTrimRow>,
   kept: ReadonlyArray<Pick<OrchestrationV2ThreadShell, "id">>,
 ): ReadonlyArray<ThreadId> {
@@ -269,7 +267,7 @@ function omittedSubagentParentIds(
   const parentIds = new Set<ThreadId>();
   for (const row of rows) {
     const parentId = row.lineage.parentThreadId;
-    if (row.lineage.relationshipToParent === "subagent" && parentId && !keptIds.has(row.id)) {
+    if (row.lineage.relationshipToParent !== null && parentId && !keptIds.has(row.id)) {
       parentIds.add(parentId);
     }
   }

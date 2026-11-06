@@ -665,6 +665,7 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
       parent: string | null,
       activityRunStatus: "running" | null,
       settledDaysAgo: number | null = null,
+      relationshipToParent: "subagent" | "fork" = "subagent",
     ) =>
       ({
         id: ThreadId.make(id),
@@ -679,7 +680,7 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
           settledDaysAgo === null ? null : DateTime.makeUnsafe(-settledDaysAgo * 86_400_000),
         lineage: {
           parentThreadId: parent === null ? null : ThreadId.make(parent),
-          relationshipToParent: parent === null ? null : "subagent",
+          relationshipToParent: parent === null ? null : relationshipToParent,
           rootThreadId: ThreadId.make(parent ?? id),
         },
       }) as unknown as OrchestrationV2ThreadShell;
@@ -688,7 +689,7 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
       shell("idle", "parent", null),
       shell("live", "parent", "running"),
       ...Array.from({ length: 25 }, (_, index) => shell(`recent-${index}`, null, null, 1)),
-      shell("old", null, null, 30),
+      shell("old", "recent-0", null, 30, "fork"),
     ];
     const firstSnapshot = (input: {
       readonly omitIdleSubagents?: boolean;
@@ -745,18 +746,22 @@ it.effect("shell snapshots omit idle children and older settled threads only on 
       threads.map((thread) => thread.id),
     );
     assert.isUndefined(full?.olderSettled);
-    assert.isUndefined(full?.idleSubagentParentIds);
+    assert.isUndefined(full?.omittedChildParentIds);
     const withoutChildren = yield* firstSnapshot({ omitIdleSubagents: true });
     assert.deepEqual(
       withoutChildren?.threads.map((thread) => thread.id),
       ["parent", "live", ...recent, "old"],
     );
-    assert.deepEqual(withoutChildren?.idleSubagentParentIds, [ThreadId.make("parent")]);
+    assert.deepEqual(withoutChildren?.omittedChildParentIds, [ThreadId.make("parent")]);
     const withoutOld = yield* firstSnapshot({ omitIdleSubagents: true, omitOlderSettled: true });
     assert.deepEqual(
       withoutOld?.threads.map((thread) => thread.id),
       ["parent", "live", ...recent],
     );
+    assert.deepEqual(withoutOld?.omittedChildParentIds, [
+      ThreadId.make("parent"),
+      ThreadId.make("recent-0"),
+    ]);
     assert.deepEqual(withoutOld?.olderSettled?.counts, [
       { projectId: ProjectId.make("project"), count: 1 },
     ]);

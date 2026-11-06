@@ -126,10 +126,10 @@ export function flattenSidebarLineage<T extends SidebarLineageThread>(input: {
   readonly roots: ReadonlyArray<T>;
   readonly forest: SidebarLineageForest<T>;
   readonly expandedByKey: Readonly<Record<string, boolean>>;
-  /** Parents whose idle subagent children are not loaded. */
-  readonly idleParentKeys: ReadonlySet<string>;
+  /** Parents with children the shell left out, which load when the parent opens. */
+  readonly unloadedParentKeys: ReadonlySet<string>;
 }): SidebarLineageRow<T>[] {
-  const { forest, expandedByKey, idleParentKeys } = input;
+  const { forest, expandedByKey, unloadedParentKeys } = input;
   const liveBelow = new Map<string, boolean>();
   const hasLiveDescendant = (key: string): boolean => {
     const known = liveBelow.get(key);
@@ -145,7 +145,7 @@ export function flattenSidebarLineage<T extends SidebarLineageThread>(input: {
   const visit = (thread: T, parentKey: string | null, guides: ReadonlyArray<boolean>): void => {
     const key = keyOf(thread);
     const children = forest.childrenByKey.get(key) ?? [];
-    const expandable = children.length > 0 || idleParentKeys.has(key);
+    const expandable = children.length > 0 || unloadedParentKeys.has(key);
     const expanded = expandable && (expandedByKey[key] ?? hasLiveDescendant(key));
     rows.push({ thread, key, depth: guides.length, parentKey, expandable, expanded, guides });
     if (!expanded) return;

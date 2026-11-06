@@ -2235,8 +2235,8 @@ export const OrchestrationV2ShellSnapshot = Schema.Struct({
   ...OrchestrationV2ThreadShellSnapshot.fields,
   projects: Schema.Array(OrchestrationProjectShell),
   olderSettled: Schema.optionalKey(OrchestrationV2OlderSettledThreads),
-  /** With `omitIdleSubagents`, the parents of the idle subagent children this snapshot left out. */
-  idleSubagentParentIds: Schema.optionalKey(Schema.Array(ThreadId)),
+  /** In a trimmed snapshot, the parents of subagent and fork children it left out. */
+  omittedChildParentIds: Schema.optionalKey(Schema.Array(ThreadId)),
 });
 export type OrchestrationV2ShellSnapshot = typeof OrchestrationV2ShellSnapshot.Type;
 

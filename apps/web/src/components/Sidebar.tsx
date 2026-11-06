@@ -157,7 +157,7 @@ import { environmentProjects } from "../state/projects";
 import { threadEnvironment } from "../state/threads";
 import { useOlderSettledShelf, useOlderSettledShelfGrowth } from "../state/olderSettledShelf";
 import { useMountedThreadFamilies } from "../state/lineageFamilies";
-import { useIdleSubagentParentKeys } from "../state/shell";
+import { useOmittedChildParentKeys } from "../state/shell";
 import {
   buildSidebarLineageForest,
   flattenSidebarLineage,
@@ -435,7 +435,7 @@ function useSidebarThreads(input: {
   readonly routeThreadKey: string | null;
   /** The open thread's nearest listed ancestor, or the thread itself. */
   readonly routeListedThreadKey: string | null;
-  readonly idleParentKeys: ReadonlySet<string>;
+  readonly unloadedParentKeys: ReadonlySet<string>;
   // Set in boring mode: the project groups to fold active threads into, in order.
   readonly folderGroups: readonly SidebarProjectSnapshot[] | null;
   // Keeps folders with no active threads, so a project the user filtered to or pinned can start one.
@@ -450,7 +450,7 @@ function useSidebarThreads(input: {
     threads,
     delegatedUnderParent,
     routeThreadKey,
-    idleParentKeys,
+    unloadedParentKeys,
     folderGroups,
     keepEmptyFolders: keepEmpty,
   } = input;
@@ -577,7 +577,7 @@ function useSidebarThreads(input: {
     ],
     forest: lineageForest,
     expandedByKey: threadLineageExpandedById,
-    idleParentKeys,
+    unloadedParentKeys,
   });
   const orderedThreads = lineageRows.map((row) => row.thread);
   const lineageRowByKey = new Map(lineageRows.map((row) => [row.key, row] as const));
@@ -589,7 +589,7 @@ function useSidebarThreads(input: {
   }
   useMountedThreadFamilies(
     lineageRows.flatMap((row) =>
-      row.expanded && idleParentKeys.has(row.key)
+      row.expanded && unloadedParentKeys.has(row.key)
         ? [{ environmentId: row.thread.environmentId, threadId: row.thread.lineage.rootThreadId }]
         : [],
     ),
@@ -1159,7 +1159,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
           ),
         );
   const threads = useQuietThreadShells();
-  const idleSubagentParentKeys = useIdleSubagentParentKeys();
+  const omittedChildParentKeys = useOmittedChildParentKeys();
   const setThreadLineageExpanded = useUiStateStore((store) => store.setThreadLineageExpanded);
   const routeListedThreadKey =
     routeThreadRef === null
@@ -1182,11 +1182,14 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
   // already lists the row; the active row's ref callback scrolls to it.
   const { widensScope: revealWidensScope } = resolveSidebarRouteReveal({
     reveal: routeReveal,
-    routeKey: routeListedThreadKey,
+    // Keyed by the open thread, so moving between sibling workers still reveals; the scope
+    // decision uses the listed row that stands for it.
+    routeKey: routeThreadKey,
     isSearching: isSearchingThreads,
     scopedProjectKeys: chosenScopeProjectKeys,
     delegatedUnderParent,
-    findThread: (key) => threads.find((candidate) => threadShellKey(candidate) === key),
+    findThread: () =>
+      threads.find((candidate) => threadShellKey(candidate) === routeListedThreadKey),
   });
   const projectScopeKeys = revealWidensScope ? [] : chosenProjectScopeKeys;
   const projectScopeKey = projectScopeKeys.length === 0 ? null : projectScopeKeys.join("\n");
@@ -1399,7 +1402,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     delegatedUnderParent,
     routeThreadKey,
     routeListedThreadKey,
-    idleParentKeys: idleSubagentParentKeys,
+    unloadedParentKeys: omittedChildParentKeys,
     folderGroups: boringSidebarEnabled
       ? scopedProjectGroups.length === 0
         ? // An archived project keeps a folder for its active threads, below the rest.
@@ -1409,9 +1412,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     keepEmptyFolders: (group) =>
       scopedProjectGroups.length > 0 || (group.pinned && !group.archived),
   });
-  // The reveal tracks the listed row; a nested open thread scrolls its own row for it.
-  const revealListedRow = useActiveRowReveal(routeReveal, routeListedThreadKey);
-  const revealActiveRow = (row: HTMLElement) => revealListedRow(row, routeListedThreadKey ?? "");
+  const revealRouteRow = useActiveRowReveal(routeReveal, routeThreadKey);
+  const revealActiveRow = (row: HTMLElement) => revealRouteRow(row, routeThreadKey ?? "");
 
   // Ranked across environments as the palette ranks them, so one
   // environment's list does not sit above another's better matches; rows

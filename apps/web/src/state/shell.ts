@@ -68,27 +68,27 @@ export const liveShellEnvironmentIdsAtom = Atom.make((get) => {
   return next;
 }).pipe(Atom.withLabel("web-live-shell-environment-ids"));
 
-let previousIdleSubagentParentKeys: ReadonlySet<string> = new Set();
+let previousOmittedChildParentKeys: ReadonlySet<string> = new Set();
 /** Thread keys of parents whose idle subagent children the shells left to thread families. */
-const idleSubagentParentKeysAtom = Atom.make((get) => {
+const omittedChildParentKeysAtom = Atom.make((get) => {
   const next = new Set<string>();
   for (const environmentId of enabledEnvironmentIds(get(environmentCatalog.catalogValueAtom))) {
-    for (const threadId of get(environmentShell.idleSubagentParentIdsAtom(environmentId))) {
+    for (const threadId of get(environmentShell.omittedChildParentIdsAtom(environmentId))) {
       next.add(scopedThreadKey(scopeThreadRef(environmentId, threadId)));
     }
   }
   if (
-    next.size === previousIdleSubagentParentKeys.size &&
-    [...next].every((key) => previousIdleSubagentParentKeys.has(key))
+    next.size === previousOmittedChildParentKeys.size &&
+    [...next].every((key) => previousOmittedChildParentKeys.has(key))
   ) {
-    return previousIdleSubagentParentKeys;
+    return previousOmittedChildParentKeys;
   }
-  previousIdleSubagentParentKeys = next;
+  previousOmittedChildParentKeys = next;
   return next;
 }).pipe(Atom.withLabel("web-idle-subagent-parent-keys"));
 
-export function useIdleSubagentParentKeys(): ReadonlySet<string> {
-  return useAtomValue(idleSubagentParentKeysAtom);
+export function useOmittedChildParentKeys(): ReadonlySet<string> {
+  return useAtomValue(omittedChildParentKeysAtom);
 }
 
 export const allEnvironmentShellsBootstrappedAtom = Atom.make((get) => {

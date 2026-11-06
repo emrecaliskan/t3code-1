@@ -63,7 +63,7 @@ function tree(
     roots,
     forest,
     expandedByKey: options.expanded ?? {},
-    idleParentKeys: new Set((options.idle ?? []).map(key)),
+    unloadedParentKeys: new Set((options.idle ?? []).map(key)),
   });
   return {
     forest,
