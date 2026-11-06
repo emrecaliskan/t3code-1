@@ -37,15 +37,17 @@ const keyOf = (thread: Pick<SidebarLineageThread, "environmentId" | "id">) =>
   scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
 
 /**
- * Nests each candidate under its nearest candidate ancestor that itself renders, walking stored
- * lineage through threads that cannot render. A subagent whose chain breaks falls back to its
- * root. Listed threads with no rendering ancestor stay top-level; subagents without one stay
- * hidden. A lineage cycle is cut where the walk meets it, so every listed thread renders once.
+ * Nests each candidate under its nearest rendering ancestor by stored lineage; a subagent whose
+ * chain breaks falls back to its root. Without one, a thread is top-level when `topLevel` places
+ * it (by default, when listed). Cycles are cut where met, so every thread renders once.
  */
 export function buildSidebarLineageForest<T extends SidebarLineageThread>(input: {
   readonly candidates: ReadonlyArray<T>;
   readonly threads: ReadonlyArray<SidebarLineageThread>;
+  /** Keys of rows the sidebar places top-level; a parent outside it cannot hold children. */
+  readonly topLevel?: ReadonlySet<string>;
 }): SidebarLineageForest<T> {
+  const { topLevel } = input;
   const threadByKey = new Map(input.threads.map((thread) => [keyOf(thread), thread] as const));
   const candidateByKey = new Map(
     input.candidates.map((thread) => [keyOf(thread), thread] as const),
@@ -80,8 +82,8 @@ export function buildSidebarLineageForest<T extends SidebarLineageThread>(input:
     if (parentKey !== undefined) parentByKey.set(key, parentKey);
   }
 
-  // A row renders when it is listed with no parent or its parent renders. A listed row whose
-  // parent cannot render, including one met again around a cycle, is cut loose to the top level.
+  // A row renders when its parent renders or it is top-level. A row whose parent cannot render,
+  // including one met again around a cycle, is cut loose to the top level.
   const renders = new Map<string, boolean | "visiting">();
   const resolve = (key: string): boolean => {
     const known = renders.get(key);
@@ -94,7 +96,10 @@ export function buildSidebarLineageForest<T extends SidebarLineageThread>(input:
       rendered = true;
     } else {
       parentByKey.delete(key);
-      rendered = isListedThreadLineage(candidateByKey.get(key)!.lineage);
+      rendered =
+        topLevel === undefined
+          ? isListedThreadLineage(candidateByKey.get(key)!.lineage)
+          : topLevel.has(key);
     }
     renders.set(key, rendered);
     return rendered;

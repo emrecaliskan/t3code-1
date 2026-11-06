@@ -111,6 +111,29 @@ describe("buildSidebarLineageForest", () => {
     ]);
   });
 
+  it("keeps a fork's own row when the sidebar does not place its parent", () => {
+    const threads = [
+      thread("shelved"),
+      thread("fork", { parent: "shelved", relationship: "fork" }),
+      thread("worker", { parent: "shelved" }),
+      thread("fork-worker", { parent: "fork", root: "shelved" }),
+    ];
+    const forest = buildSidebarLineageForest({
+      candidates: threads,
+      threads,
+      topLevel: new Set([key("fork")]),
+    });
+    expect([...forest.nested]).toEqual([key("fork-worker")]);
+    expect(forest.childrenByKey.get(key("shelved"))).toBeUndefined();
+    expect(
+      buildSidebarLineageForest({
+        candidates: threads,
+        threads,
+        topLevel: new Set([key("shelved"), key("fork")]),
+      }).childrenByKey.get(key("shelved")),
+    ).toHaveLength(2);
+  });
+
   it("attaches past ancestors that cannot render", () => {
     const archivedMiddle = thread("middle", { parent: "root" });
     const threads = [
