@@ -959,7 +959,7 @@ function turnItemText(item: OrchestrationV2TurnItem): string | null {
     case "external_wait":
       return jsonText({
         dependency: item.dependency,
-        result: item.result,
+        state: item.state,
         delivery: item.delivery,
       });
     case "subagent":

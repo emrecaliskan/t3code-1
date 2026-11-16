@@ -1,48 +1,25 @@
-/** Durable state machine for one finite, exact external dependency. */
+import * as DateTime from "effect/DateTime";
+import * as Schema from "effect/Schema";
+import {
+  MessageId,
+  OrchestrationV2ExternalWaitDependency,
+  OrchestrationV2ExternalWaitRecord,
+  OrchestrationV2ExternalWaitResult,
+  OrchestrationV2ExternalWaitState,
+  RunId,
+  ThreadId,
+  TurnItemId,
+} from "@t3tools/contracts";
 
-export type ExternalWaitDependency = Readonly<{
-  host: string;
-  repository: string;
-  runId: string;
-  attempt: number;
-  expectedHeadSha: string;
-}>;
+const decodeTurnItemId = Schema.decodeSync(TurnItemId);
+const decodeMessageId = Schema.decodeSync(MessageId);
+const decodeRunId = Schema.decodeSync(RunId);
 
-export type ExternalWaitTerminal =
-  | "remote_success"
-  | "remote_failure"
-  | "remote_cancelled"
-  | "remote_startup_failure"
-  | "deadline"
-  | "observer_error";
-
-export type ExternalWaitDisposition =
-  | { readonly kind: "pending"; readonly nextDueAt: number }
-  | {
-      readonly kind: "held";
-      readonly reason: "paused" | "decision" | "quota" | "provider_disabled";
-    }
-  | {
-      readonly kind: "terminal";
-      readonly result: ExternalWaitTerminal;
-      readonly observedAt: number;
-    }
-  | { readonly kind: "cancelled" }
-  | { readonly kind: "disposed" };
-
-export type ExternalWaitRecord = Readonly<{
-  itemId: string;
-  ownerThreadId: string;
-  ownerRunId: string;
-  callerKey: string;
-  generation: number;
-  dependency: ExternalWaitDependency;
-  deadlineAt: number;
-  disposition: ExternalWaitDisposition;
-  reservedMessageId: string;
-  queuedRunId: string;
-  delivery: "undelivered" | "queued" | "accepted";
-}>;
+export type ExternalWaitDependency = OrchestrationV2ExternalWaitDependency;
+export type ExternalWaitTerminal = OrchestrationV2ExternalWaitResult;
+export type ExternalWaitDisposition = OrchestrationV2ExternalWaitState;
+export type ExternalWaitDelivery = OrchestrationV2ExternalWaitRecord["delivery"];
+export type ExternalWaitRecord = OrchestrationV2ExternalWaitRecord;
 
 export type ExternalWaitObservation = Readonly<{
   runId: string;
@@ -57,14 +34,11 @@ export type ExternalWaitReaderError =
   | "bounded_read_error";
 
 export type ExternalWaitRead =
-  | { readonly kind: "pending"; readonly nextDueAt: number }
+  | { readonly kind: "pending"; readonly nextDueAt: DateTime.Utc }
   | { readonly kind: "observation"; readonly value: ExternalWaitObservation }
   | { readonly kind: "error"; readonly error: ExternalWaitReaderError };
 
-export type ExternalWaitRegistration = Readonly<{
-  readonly record: ExternalWaitRecord;
-  readonly created: boolean;
-}>;
+const MAX_DELIVERY_ATTEMPTS = 3;
 
 const terminalForObservation = (
   conclusion: ExternalWaitObservation["conclusion"],
@@ -88,59 +62,85 @@ const sameDependency = (left: ExternalWaitDependency, right: ExternalWaitDepende
   left.attempt === right.attempt &&
   left.expectedHeadSha === right.expectedHeadSha;
 
-const actionable = (record: ExternalWaitRecord): boolean => record.disposition.kind === "terminal";
+const epoch = (value: DateTime.Utc): number => DateTime.toEpochMillis(value);
+const isTerminal = (
+  state: ExternalWaitDisposition,
+): state is Extract<ExternalWaitDisposition, { kind: "terminal" }> => state.kind === "terminal";
+const isNonTerminal = (
+  state: ExternalWaitDisposition,
+): state is Extract<ExternalWaitDisposition, { kind: "pending" | "held" | "cancelled" }> =>
+  state.kind === "pending" || state.kind === "held" || state.kind === "cancelled";
 
 export class ExternalWaitRegistry {
-  private readonly records = new Map<string, ExternalWaitRecord>();
+  private readonly records = new Map<TurnItemId, ExternalWaitRecord>();
   private nextItem = 0;
 
   register(input: {
-    ownerThreadId: string;
-    ownerRunId: string;
+    ownerThreadId: ThreadId;
+    ownerRunId: RunId;
     callerKey: string;
     generation?: number;
     dependency: ExternalWaitDependency;
-    deadlineAt: number;
-    nextDueAt: number;
-  }): ExternalWaitRegistration {
-    const existing = [...this.records.values()].find(
+    deadlineAt: DateTime.Utc;
+    nextDueAt: DateTime.Utc;
+    itemId?: TurnItemId;
+    reservedMessageId?: MessageId;
+    queuedRunId?: RunId;
+  }): { readonly record: ExternalWaitRecord; readonly created: boolean } {
+    const generation = input.generation ?? 1;
+    const sameCaller = [...this.records.values()].filter(
       (record) =>
-        record.ownerThreadId === input.ownerThreadId &&
-        record.callerKey === input.callerKey &&
-        record.generation === (input.generation ?? record.generation),
+        record.ownerThreadId === input.ownerThreadId && record.callerKey === input.callerKey,
+    );
+    const existing = sameCaller.find(
+      (record) => record.generation === generation && record.ownerRunId === input.ownerRunId,
     );
     if (existing !== undefined) {
-      if (existing.disposition.kind === "disposed") {
-        throw new Error("disposed external wait requires an explicit new generation");
+      if (existing.state.kind === "disposed" || existing.state.kind === "cancelled") {
+        throw new Error("cancelled or disposed external wait requires an explicit new generation");
+      }
+      if (isTerminal(existing.state)) {
+        throw new Error("terminal external wait requires an explicit new generation");
       }
       if (
         !sameDependency(existing.dependency, input.dependency) ||
-        existing.deadlineAt !== input.deadlineAt
+        epoch(existing.deadlineAt) !== epoch(input.deadlineAt)
       ) {
         throw new Error("external wait caller key is already bound to a different dependency");
       }
       return { record: existing, created: false };
     }
+    const conflicting = sameCaller.find((record) => record.generation === generation);
+    if (conflicting !== undefined) {
+      throw new Error("external wait caller key is bound to a different owner run");
+    }
 
-    const generation = input.generation ?? 1;
+    const itemNumber = ++this.nextItem;
+    const itemId = input.itemId ?? decodeTurnItemId(`external-wait:${itemNumber}`);
     const record: ExternalWaitRecord = {
-      itemId: `external-wait:${++this.nextItem}`,
+      type: "external_wait",
+      itemId,
       ownerThreadId: input.ownerThreadId,
       ownerRunId: input.ownerRunId,
       callerKey: input.callerKey,
       generation,
       dependency: input.dependency,
       deadlineAt: input.deadlineAt,
-      disposition: { kind: "pending", nextDueAt: Math.min(input.nextDueAt, input.deadlineAt) },
-      reservedMessageId: `external-wait-message:${this.nextItem}`,
-      queuedRunId: `external-wait-run:${this.nextItem}`,
-      delivery: "undelivered",
+      state: {
+        kind: "pending",
+        nextDueAt:
+          epoch(input.nextDueAt) <= epoch(input.deadlineAt) ? input.nextDueAt : input.deadlineAt,
+      },
+      reservedMessageId:
+        input.reservedMessageId ?? decodeMessageId(`external-wait-message:${itemNumber}`),
+      queuedRunId: input.queuedRunId ?? decodeRunId(`external-wait-run:${itemNumber}`),
+      delivery: { kind: "undelivered" },
     };
-    this.records.set(record.itemId, record);
+    this.records.set(itemId, record);
     return { record, created: true };
   }
 
-  get(itemId: string): ExternalWaitRecord | undefined {
+  get(itemId: TurnItemId): ExternalWaitRecord | undefined {
     return this.records.get(itemId);
   }
 
@@ -148,19 +148,25 @@ export class ExternalWaitRegistry {
     return [...this.records.values()];
   }
 
-  reconcile(itemId: string, read: ExternalWaitRead, now: number): ExternalWaitRecord {
+  reconcile(itemId: TurnItemId, read: ExternalWaitRead, now: DateTime.Utc): ExternalWaitRecord {
     const current = this.require(itemId);
-    if (current.disposition.kind !== "pending") return current;
-    if (now >= current.deadlineAt)
-      return this.replace(current, { kind: "terminal", result: "deadline", observedAt: now });
+    if (current.state.kind !== "pending") return current;
+    if (epoch(now) >= epoch(current.deadlineAt)) {
+      return this.replaceState(current, { kind: "terminal", result: "deadline", observedAt: now });
+    }
     if (read.kind === "pending") {
-      return this.replace(current, {
+      return this.replaceState(current, {
         kind: "pending",
-        nextDueAt: Math.min(Math.max(read.nextDueAt, now), current.deadlineAt),
+        nextDueAt:
+          epoch(read.nextDueAt) <= epoch(current.deadlineAt) ? read.nextDueAt : current.deadlineAt,
       });
     }
     if (read.kind === "error") {
-      return this.replace(current, { kind: "terminal", result: "observer_error", observedAt: now });
+      return this.replaceState(current, {
+        kind: "terminal",
+        result: "observer_error",
+        observedAt: now,
+      });
     }
     const { value } = read;
     if (
@@ -168,9 +174,13 @@ export class ExternalWaitRegistry {
       value.attempt !== current.dependency.attempt ||
       value.headSha !== current.dependency.expectedHeadSha
     ) {
-      return this.replace(current, { kind: "terminal", result: "observer_error", observedAt: now });
+      return this.replaceState(current, {
+        kind: "terminal",
+        result: "observer_error",
+        observedAt: now,
+      });
     }
-    return this.replace(current, {
+    return this.replaceState(current, {
       kind: "terminal",
       result: terminalForObservation(value.conclusion),
       observedAt: now,
@@ -178,54 +188,91 @@ export class ExternalWaitRegistry {
   }
 
   hold(
-    itemId: string,
-    reason: "paused" | "decision" | "quota" | "provider_disabled",
+    itemId: TurnItemId,
+    reason: Extract<ExternalWaitDisposition, { kind: "held" }>["reason"],
   ): ExternalWaitRecord {
     const current = this.require(itemId);
-    if (current.disposition.kind === "disposed" || current.disposition.kind === "cancelled")
-      return current;
-    return this.replace(current, { kind: "held", reason });
+    if (!isNonTerminal(current.state) || current.state.kind === "cancelled") return current;
+    return this.replaceState(current, { kind: "held", reason });
   }
 
-  resume(itemId: string, nextDueAt: number): ExternalWaitRecord {
+  resume(itemId: TurnItemId, nextDueAt: DateTime.Utc, now: DateTime.Utc): ExternalWaitRecord {
     const current = this.require(itemId);
-    if (current.disposition.kind !== "held") return current;
-    if (nextDueAt >= current.deadlineAt)
-      return this.replace(current, { kind: "terminal", result: "deadline", observedAt: nextDueAt });
-    return this.replace(current, { kind: "pending", nextDueAt });
-  }
-
-  cancel(itemId: string): ExternalWaitRecord {
-    const current = this.require(itemId);
-    if (current.disposition.kind === "terminal" || current.disposition.kind === "disposed")
-      return current;
-    return this.replace(current, { kind: "cancelled" });
-  }
-
-  dispose(itemId: string): ExternalWaitRecord {
-    const current = this.require(itemId);
-    return this.replace(current, { kind: "disposed" });
-  }
-
-  deliver(itemId: string): {
-    readonly record: ExternalWaitRecord;
-    readonly shouldDeliver: boolean;
-  } {
-    const current = this.require(itemId);
-    if (!actionable(current) || current.delivery !== "undelivered") {
-      return { record: current, shouldDeliver: false };
+    if (current.state.kind !== "held") return current;
+    if (epoch(nextDueAt) >= epoch(current.deadlineAt)) {
+      return this.replaceState(current, { kind: "terminal", result: "deadline", observedAt: now });
     }
-    const queued = { ...current, delivery: "queued" as const };
-    this.records.set(itemId, queued);
-    return { record: queued, shouldDeliver: true };
+    return this.replaceState(current, { kind: "pending", nextDueAt });
   }
 
-  accept(itemId: string): ExternalWaitRecord {
+  cancel(itemId: TurnItemId, now: DateTime.Utc): ExternalWaitRecord {
     const current = this.require(itemId);
-    if (current.delivery !== "queued") return current;
-    const accepted = { ...current, delivery: "accepted" as const };
-    this.records.set(itemId, accepted);
-    return accepted;
+    if (isTerminal(current.state)) throw new Error("terminal external wait cannot be cancelled");
+    if (current.state.kind === "disposed" || current.state.kind === "cancelled") return current;
+    return this.replaceState(current, { kind: "cancelled", cancelledAt: now });
+  }
+
+  dispose(itemId: TurnItemId, now: DateTime.Utc): ExternalWaitRecord {
+    const current = this.require(itemId);
+    if (isTerminal(current.state)) throw new Error("terminal external wait cannot be disposed");
+    if (current.state.kind === "disposed") return current;
+    const prior = current.state.kind;
+    return this.replace({
+      ...current,
+      state: { kind: "disposed", disposedAt: now, prior },
+      delivery: { kind: "disposed" },
+    });
+  }
+
+  beginDelivery(itemId: TurnItemId): ExternalWaitRecord {
+    const current = this.require(itemId);
+    if (!isTerminal(current.state)) return current;
+    if (
+      current.delivery.kind === "queueing" ||
+      current.delivery.kind === "queued" ||
+      current.delivery.kind === "accepted"
+    ) {
+      return current;
+    }
+    if (current.delivery.kind === "held" || current.delivery.kind === "disposed") return current;
+    const attempt = current.delivery.kind === "failed" ? current.delivery.attempt + 1 : 1;
+    if (attempt > MAX_DELIVERY_ATTEMPTS) {
+      return this.replace({ ...current, delivery: { kind: "held", reason: "retry_limit" } });
+    }
+    return this.replace({ ...current, delivery: { kind: "queueing", attempt } });
+  }
+
+  commitDelivery(itemId: TurnItemId, queuedAt: DateTime.Utc): ExternalWaitRecord {
+    const current = this.require(itemId);
+    if (current.delivery.kind !== "queueing") return current;
+    return this.replace({
+      ...current,
+      delivery: { kind: "queued", attempt: current.delivery.attempt, queuedAt },
+    });
+  }
+
+  failDelivery(itemId: TurnItemId, reason: string): ExternalWaitRecord {
+    const current = this.require(itemId);
+    if (current.delivery.kind !== "queueing") return current;
+    if (current.delivery.attempt >= MAX_DELIVERY_ATTEMPTS) {
+      return this.replace({ ...current, delivery: { kind: "held", reason: "retry_limit" } });
+    }
+    return this.replace({
+      ...current,
+      delivery: { kind: "failed", attempt: current.delivery.attempt, reason },
+    });
+  }
+
+  accept(itemId: TurnItemId, acceptedAt: DateTime.Utc): ExternalWaitRecord {
+    const current = this.require(itemId);
+    if (current.delivery.kind !== "queued") return current;
+    return this.replace({ ...current, delivery: { kind: "accepted", acceptedAt } });
+  }
+
+  recoverQueueing(itemId: TurnItemId): ExternalWaitRecord {
+    const current = this.require(itemId);
+    if (current.delivery.kind !== "queueing") return current;
+    return this.failDelivery(itemId, "queue interrupted before commit");
   }
 
   snapshot(): ReadonlyArray<ExternalWaitRecord> {
@@ -241,18 +288,21 @@ export class ExternalWaitRegistry {
     }
   }
 
-  private require(itemId: string): ExternalWaitRecord {
+  private require(itemId: TurnItemId): ExternalWaitRecord {
     const record = this.records.get(itemId);
     if (record === undefined) throw new Error(`unknown external wait ${itemId}`);
     return record;
   }
 
-  private replace(
+  private replaceState(
     record: ExternalWaitRecord,
-    disposition: ExternalWaitDisposition,
+    state: ExternalWaitDisposition,
   ): ExternalWaitRecord {
-    const next = { ...record, disposition };
-    this.records.set(record.itemId, next);
-    return next;
+    return this.replace({ ...record, state });
+  }
+
+  private replace(record: ExternalWaitRecord): ExternalWaitRecord {
+    this.records.set(record.itemId, record);
+    return record;
   }
 }
