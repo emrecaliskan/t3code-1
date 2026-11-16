@@ -3738,6 +3738,15 @@ const OrchestrationV2InternalCommand = Schema.Union([
       }),
     ),
   }),
+  /** Records a finite external dependency as a durable turn item. */
+  Schema.Struct({
+    type: Schema.Literal("external_wait.record"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+    nodeId: NodeId,
+    record: OrchestrationV2ExternalWaitRecord,
+  }),
 ]);
 export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;
 

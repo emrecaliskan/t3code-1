@@ -629,6 +629,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.created.record":
       return command.parentThreadId;
     case "secret_request.record":
+    case "external_wait.record":
     case "link_request.record":
       return command.threadId;
     case "thread.fork":
@@ -9430,6 +9431,118 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     },
   );
 
+  const dispatchExternalWaitRecord = Effect.fn("orchestrationV2.dispatch.externalWaitRecord")(
+    function* (
+      command: Extract<OrchestrationV2InternalCommand, { readonly type: "external_wait.record" }>,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    ) {
+      const projection = yield* projectionStore
+        .getThreadRecords(command.threadId, ["runs", "nodes", "turnItems", "providerTurns"], {
+          turnItemTypes: ["external_wait"],
+          messageRoles: [],
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+          ),
+        );
+      const run = projection.runs.find((candidate) => candidate.id === command.runId);
+      const record = command.record;
+      if (
+        run === undefined ||
+        run.rootNodeId !== command.nodeId ||
+        record.itemId !== command.record.itemId ||
+        record.ownerThreadId !== command.threadId ||
+        record.ownerRunId !== command.runId
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `External wait ${record.itemId} does not belong to run ${command.runId}.`,
+        });
+      }
+      const existing = projection.turnItems.find((item) => item.id === record.itemId);
+      if (existing !== undefined && existing.type !== "external_wait") {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Turn item ${record.itemId} is not an external wait.`,
+        });
+      }
+      if (
+        existing !== undefined &&
+        existing.type === "external_wait" &&
+        (existing.ownerRunId !== record.ownerRunId ||
+          existing.ownerThreadId !== record.ownerThreadId ||
+          existing.generation !== record.generation ||
+          existing.dependency.host !== record.dependency.host ||
+          existing.dependency.repository !== record.dependency.repository ||
+          existing.dependency.runId !== record.dependency.runId ||
+          existing.dependency.attempt !== record.dependency.attempt ||
+          existing.dependency.expectedHeadSha !== record.dependency.expectedHeadSha)
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `External wait ${record.itemId} is already bound to another owner or dependency.`,
+        });
+      }
+      const now = yield* DateTime.now;
+      const completedAt =
+        record.state.kind === "terminal"
+          ? record.state.observedAt
+          : record.state.kind === "cancelled"
+            ? record.state.cancelledAt
+            : record.state.kind === "disposed"
+              ? record.state.disposedAt
+              : null;
+      const status =
+        record.state.kind === "pending" || record.state.kind === "held"
+          ? "waiting"
+          : record.state.kind === "terminal"
+            ? "completed"
+            : "cancelled";
+      const turnItem: OrchestrationV2TurnItem =
+        existing !== undefined &&
+        existing.type === "external_wait" &&
+        existing.status === "completed" &&
+        status !== "completed"
+          ? existing
+          : {
+              id: record.itemId,
+              threadId: command.threadId,
+              runId: command.runId,
+              nodeId: command.nodeId,
+              providerThreadId: run.providerThreadId,
+              providerTurnId: providerTurnForRun(projection, run)?.id ?? null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal:
+                existing?.ordinal === undefined
+                  ? yield* nextTurnItemOrdinal(projection)
+                  : existing.ordinal,
+              status,
+              title: `External wait: ${record.dependency.repository}#${record.dependency.runId}`,
+              startedAt: existing?.startedAt ?? now,
+              completedAt,
+              updatedAt: now,
+              ...record,
+            };
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "turn-item.updated",
+        threadId: command.threadId,
+        runId: command.runId,
+        nodeId: command.nodeId,
+        providerInstanceId: run.providerInstanceId,
+        occurredAt: now,
+        payload: turnItem,
+      });
+    },
+  );
+
   /**
    * Records or updates the card for a link an agent asked the user to make.
    * The pairing code goes straight to the link and never through orchestration.
@@ -14140,6 +14253,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "secret_request.record":
         yield* dispatchSecretRequestRecord(command, events);
+        break;
+      case "external_wait.record":
+        yield* dispatchExternalWaitRecord(command, events);
         break;
       case "link_request.record":
         yield* dispatchLinkRequestRecord(command, events, effects);
