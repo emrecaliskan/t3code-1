@@ -1041,6 +1041,109 @@ function makeLocalCommandHarness(input: {
   };
 }
 
+effectIt.effect.each([
+  "released",
+  "held",
+  "settled",
+  "snoozed",
+  "paused",
+  "before-native-start",
+] as const)("rejects a previously admitted followup after it is %s", (disposition) =>
+  Effect.gen(function* () {
+    const harness = makeLocalCommandHarness({
+      text: "Verify landing",
+      ...(disposition === "before-native-start" && {
+        previousTurn: { runStatus: "completed", turnStatus: "completed" },
+      }),
+    });
+    const original = harness.projection();
+    const messageId = MessageId.make("pr-followup:withdrawn");
+    harness.setProjection({
+      ...original,
+      thread: {
+        ...original.thread,
+        archivedAt: null,
+        deletedAt: null,
+        settledOverride: null,
+        settledAt: disposition === "settled" ? DateTime.makeUnsafe("2026-11-16T12:00:00Z") : null,
+        snoozedUntil:
+          disposition === "snoozed" ? DateTime.makeUnsafe("2026-11-17T12:00:00Z") : null,
+        pullRequests: [
+          {
+            host: "github.com",
+            repository: "acme/app",
+            number: 7,
+            url: "https://github.com/acme/app/pull/7",
+            source: "agent",
+            linkedAt: "2026-11-16T12:00:00Z",
+            snapshot: null,
+            stack: null,
+            followup:
+              disposition === "held" || disposition === "released"
+                ? {
+                    generation: 1,
+                    reviewedHead: "reviewed",
+                    intendedBase: "main",
+                    status: disposition,
+                    reason: "Operator handback",
+                  }
+                : {
+                    generation: 1,
+                    reviewedHead: "reviewed",
+                    intendedBase: "main",
+                    status: "verification_pending",
+                    terminal: { type: "merged", mergeSha: "actual-merge", base: "main" },
+                    messageId,
+                    attempts: 1,
+                    lastAttemptAt: "2026-11-16T12:00:00Z",
+                  },
+          },
+        ],
+      },
+      runs: original.runs.map((run) => ({ ...run, userMessageId: messageId })),
+      messages: original.messages.map((message) =>
+        message.id === original.runs.at(-1)?.userMessageId
+          ? { ...message, id: messageId }
+          : message,
+      ),
+      providerThreads: original.providerThreads.map((thread) => ({
+        ...thread,
+        ...(disposition === "paused" && {
+          goal: { objective: "Landing", status: "paused" as const },
+        }),
+      })),
+    });
+    if (disposition === "before-native-start") {
+      yield* harness.start;
+      const start = harness.startRootRun.mock.calls.at(-1)?.[0];
+      expect(start?.shouldStartProviderTurn).toBeDefined();
+      expect(yield* start!.shouldStartProviderTurn!()).toBe(true);
+      const current = harness.projection();
+      harness.setProjection({
+        ...current,
+        thread: {
+          ...current.thread,
+          pullRequests: current.thread.pullRequests!.map((link) => ({
+            ...link,
+            followup: {
+              generation: 1,
+              reviewedHead: "reviewed",
+              intendedBase: "main",
+              status: "released",
+              reason: "Operator cancellation after admission",
+            },
+          })),
+        },
+      });
+      expect(yield* start!.shouldStartProviderTurn!()).toBe(false);
+      return;
+    }
+    const failure = yield* harness.start.pipe(Effect.flip);
+    expect(failure._tag).toBe("ProviderTurnStartError");
+    expect(harness.startRootRun).not.toHaveBeenCalled();
+  }),
+);
+
 effectIt.effect(
   "recovers the local or pushed thread tip, else the current branch, remote default, or detached HEAD",
   () =>

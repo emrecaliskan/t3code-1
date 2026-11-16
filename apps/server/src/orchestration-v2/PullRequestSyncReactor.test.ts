@@ -635,6 +635,7 @@ describe("PullRequestSyncReactor", () => {
                   syncedAt: NOW,
                   closedAt: null,
                   mergedAt: null,
+                  mergeSha: null,
                 },
                 stack: null,
               },
@@ -687,7 +688,7 @@ describe("PullRequestSyncReactor", () => {
         Effect.gen(function* () {
           yield* TestClock.setTime(Date.parse(NOW));
           const otherProject = ProjectId.make("other-project");
-          const link = makeLink(42, { state: "merged", mergedAt: NOW });
+          const link = makeLink(42, { state: "merged", mergedAt: NOW, mergeSha: "actual-merge" });
           let failing = true;
           const failure = new PullRequestOperationError({ operation, detail: "checkout missing" });
           const fixture = yield* makeHarness({
@@ -949,7 +950,11 @@ describe("PullRequestSyncReactor", () => {
           snapshot: makeSnapshot([
             makeThread("merged", {
               pullRequests: [
-                makeLink(1, { state: "merged", mergedAt: "2026-08-27T00:00:00.000Z" }),
+                makeLink(1, {
+                  state: "merged",
+                  mergedAt: "2026-08-27T00:00:00.000Z",
+                  mergeSha: "actual-merge",
+                }),
               ],
             }),
           ]),
@@ -1022,35 +1027,50 @@ describe("PullRequestSyncReactor", () => {
     ),
   );
 
-  it.effect("re-reads a merged pull request until the host supplies its merge time", () =>
-    Effect.scoped(
-      Effect.gen(function* () {
-        yield* TestClock.setTime(Date.parse(NOW));
-        const invalidated = yield* Ref.make<ReadonlyArray<number>>([]);
-        const fixture = yield* makeHarness({
-          snapshot: makeSnapshot([
-            makeThread("merged", { pullRequests: [makeLink(1, { state: "merged" })] }),
-          ]),
-          invalidate: ({ reference }) =>
-            Ref.update(invalidated, (numbers) => [...numbers, reference?.number ?? -1]),
-          summary: (input) =>
-            Effect.succeed(
-              makeSummary(input, { state: "merged", mergedAt: "2026-08-27T00:00:00.000Z" }),
-            ),
-        });
+  it.effect.each(["mergedAt", "mergeSha"] as const)(
+    "re-reads a merged pull request until the host supplies %s",
+    (missing) =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          yield* TestClock.setTime(Date.parse(NOW));
+          const invalidated = yield* Ref.make<ReadonlyArray<number>>([]);
+          const fixture = yield* makeHarness({
+            snapshot: makeSnapshot([
+              makeThread("merged", {
+                pullRequests: [
+                  makeLink(1, {
+                    state: "merged",
+                    mergedAt: missing === "mergedAt" ? null : "2026-08-27T00:00:00.000Z",
+                    mergeSha: missing === "mergeSha" ? null : "actual-merge",
+                  }),
+                ],
+              }),
+            ]),
+            invalidate: ({ reference }) =>
+              Ref.update(invalidated, (numbers) => [...numbers, reference?.number ?? -1]),
+            summary: (input) =>
+              Effect.succeed(
+                makeSummary(input, {
+                  state: "merged",
+                  mergedAt: "2026-08-27T00:00:00.000Z",
+                  mergeSha: "actual-merge",
+                }),
+              ),
+          });
 
-        yield* Effect.gen(function* () {
-          const reactor = yield* startAndSweep(fixture);
-          const firstSweep = yield* Ref.get(fixture.syncCommands);
-          assert.deepStrictEqual(yield* Ref.get(invalidated), [1]);
-          assert.strictEqual(firstSweep.at(-1)?.snapshot.mergedAt, "2026-08-27T00:00:00.000Z");
-          yield* Ref.update(fixture.snapshots, (snapshot) => applySync(snapshot, firstSweep));
+          yield* Effect.gen(function* () {
+            const reactor = yield* startAndSweep(fixture);
+            const firstSweep = yield* Ref.get(fixture.syncCommands);
+            assert.deepStrictEqual(yield* Ref.get(invalidated), [1]);
+            assert.strictEqual(firstSweep.at(-1)?.snapshot.mergedAt, "2026-08-27T00:00:00.000Z");
+            assert.strictEqual(firstSweep.at(-1)?.snapshot.mergeSha, "actual-merge");
+            yield* Ref.update(fixture.snapshots, (snapshot) => applySync(snapshot, firstSweep));
 
-          for (let index = 0; index < 15; index += 1) yield* sweepAgain(fixture, reactor);
-          assert.strictEqual((yield* Ref.get(fixture.summaryCalls)).length, 1);
-        }).pipe(Effect.provide(fixture.layer));
-      }),
-    ),
+            for (let index = 0; index < 15; index += 1) yield* sweepAgain(fixture, reactor);
+            assert.strictEqual((yield* Ref.get(fixture.summaryCalls)).length, 1);
+          }).pipe(Effect.provide(fixture.layer));
+        }),
+      ),
   );
 
   it.effect("syncs a pull request a reader saw merge without waiting for the sweep", () =>

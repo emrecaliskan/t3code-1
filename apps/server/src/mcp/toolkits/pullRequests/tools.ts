@@ -4,6 +4,8 @@ import {
   OrchestratorMcpFailure,
   PositiveInt,
   PullRequestReviewGuide,
+  ThreadPullRequestFollowup,
+  PullRequestFollowupTerminal,
   PullRequestReviewGuideRun,
   PullRequestState,
   ThreadPullRequestLinkSource,
@@ -176,6 +178,15 @@ export class PullRequestGuideFailedError extends Schema.TaggedError<PullRequestG
   }
 }
 
+export class PullRequestFollowupFailedError extends Schema.TaggedError<PullRequestFollowupFailedError>()(
+  "PullRequestFollowupFailedError",
+  { reason: Schema.String, cause: Schema.Defect() },
+) {
+  override get message(): string {
+    return this.reason;
+  }
+}
+
 export const PullRequestToolError = Schema.Union([
   OrchestratorMcpFailure,
   McpCapabilityUnavailableError,
@@ -188,6 +199,7 @@ export const PullRequestToolError = Schema.Union([
   PullRequestUnlinkFailedError,
   PullRequestListFailedError,
   PullRequestWatchFailedError,
+  PullRequestFollowupFailedError,
   PullRequestNotOpenError,
   PullRequestWatchFromSubagentError,
   PullRequestProjectNotFoundError,
@@ -263,6 +275,8 @@ export const ThreadPullRequestEntry = Schema.Struct({
   ...PullRequestIdentity,
   source: ThreadPullRequestLinkSource,
   watching: Schema.Boolean,
+  followup: Schema.optional(ThreadPullRequestFollowup),
+  mergeSha: Schema.optional(Schema.NullOr(Schema.String)),
   state: Schema.NullOr(PullRequestState),
   title: Schema.NullOr(Schema.String),
   headBranch: Schema.NullOr(Schema.String),
@@ -357,7 +371,7 @@ const UnlinkPullRequestsTool = Tool.make("unlink_pull_requests", {
 
 const ListThreadPullRequestsTool = Tool.make("list_thread_pull_requests", {
   description:
-    "List PRs linked to a thread, with last known state and stack order (bottom to top). Call only when you need that list. Never as an end-of-work check.",
+    "List PRs linked to a thread, with last known state, merge SHA, followup generation and disposition, and stack order (bottom to top). Call only when you need that list. Never as an end-of-work check.",
   parameters: Schema.Struct({
     environmentId: OrchestratorMcpEnvironmentTarget,
     threadId: Schema.optional(ThreadId.annotate({ description: "Thread. Default: this thread." })),
@@ -400,6 +414,45 @@ const UnwatchPullRequestTool = Tool.make("unwatch_pull_request", {
   .annotate(Tool.Idempotent, true)
   .annotate(Tool.OpenWorld, false)
   .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromSubagents);
+
+const followupTool = <const Name extends string, const Fields extends Schema.Struct.Fields>(
+  name: Name,
+  description: string,
+  fields: Fields,
+) =>
+  Tool.make(name, {
+    description,
+    parameters: Schema.Struct({ ...PullRequestTargetInput.fields, ...fields }),
+    success: Schema.Struct({ followup: Schema.optional(ThreadPullRequestFollowup) }),
+    failure: PullRequestToolError,
+    dependencies,
+  })
+    .annotate(Tool.Readonly, false)
+    .annotate(Tool.Destructive, false)
+    .annotate(Tool.Idempotent, true)
+    .annotate(Tool.OpenWorld, false)
+    .annotate(McpSchema.EnabledWhen, McpInvocationContext.hiddenFromSubagents);
+
+const RegisterPullRequestFollowupTool = followupTool(
+  "register_pull_request_followup",
+  "Register this top-level thread as the landing owner of an already linked PR before requesting asynchronous merge. Pass the reviewed head SHA and intended base. Existing links and watches create no obligation. Only one owner is allowed per PR in this environment. The returned generation stays pending after merge until exact verification is acknowledged. Register again after a hold to explicitly resume with a new generation.",
+  { reviewedHead: TrimmedNonEmptyString, intendedBase: TrimmedNonEmptyString },
+);
+const HoldPullRequestFollowupTool = followupTool(
+  "hold_pull_request_followup",
+  "Hold this generation for a human handback. Prevent automatic followup turns. It remains visible and pending. Pass the generation returned by registration or list_thread_pull_requests and a reason. Ordinary unwatch does not hold or release it.",
+  { generation: PositiveInt, reason: TrimmedNonEmptyString },
+);
+const ReleasePullRequestFollowupTool = followupTool(
+  "release_pull_request_followup",
+  "Release ownership of this generation with an explicit reason when cancelling landing or handing responsibility back. No later observation can wake it. This does not claim a merge was verified.",
+  { generation: PositiveInt, reason: TrimmedNonEmptyString },
+);
+const AcknowledgePullRequestFollowupTool = followupTool(
+  "acknowledge_pull_request_followup",
+  "Acknowledge verified terminal followup using the exact generation, actual merge SHA and base from T3, plus verification evidence. Verify the merge commit on the intended base and perform the requested post-merge checks first. Never substitute the reviewed branch head. A closed-unmerged result uses type closed and is not merge verification. Queue acceptance or a completed run is never acknowledgement. Repeating the same acknowledgement is safe.",
+  { generation: PositiveInt, result: PullRequestFollowupTerminal, evidence: TrimmedNonEmptyString },
+);
 
 const GuideTarget = Schema.Struct({
   url: PullRequestTargetInput.fields.url,
@@ -474,6 +527,10 @@ export const PullRequestsToolkit = Toolkit.make(
   ListThreadPullRequestsTool,
   WatchPullRequestTool,
   UnwatchPullRequestTool,
+  RegisterPullRequestFollowupTool,
+  HoldPullRequestFollowupTool,
+  ReleasePullRequestFollowupTool,
+  AcknowledgePullRequestFollowupTool,
   WritePullRequestGuidesTool,
   ReadPullRequestGuideTool,
 );

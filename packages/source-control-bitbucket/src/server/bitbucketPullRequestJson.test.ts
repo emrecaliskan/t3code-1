@@ -77,9 +77,14 @@ describe("decodePullRequestPageJson", () => {
     ["DECLINED", "closed"],
     ["something new", "open"],
   ])("reads the %s state as %s", (state, expected) => {
-    const decoded = expectSuccess(decodePullRequestPageJson(page([pullRequest({ state })])));
+    const decoded = expectSuccess(
+      decodePullRequestPageJson(
+        page([pullRequest({ state, merge_commit: { hash: "actual-merge" } })]),
+      ),
+    );
 
     expect(decoded.items[0]?.state).toBe(expected);
+    expect(decoded.items[0]?.mergeSha).toBe("actual-merge");
   });
 
   it("skips a malformed row rather than failing the page", () => {

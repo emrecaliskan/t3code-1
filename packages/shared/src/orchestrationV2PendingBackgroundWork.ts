@@ -6,7 +6,7 @@ import type {
   ThreadId,
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
-import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
+import { hasPendingPullRequestFollowup, isOrchestrationV2WorkActive } from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";
 
 import { resolveT3McpToolId } from "./t3McpToolPresentation.ts";
@@ -111,7 +111,7 @@ type PendingBackgroundWorkRun = Pick<OrchestrationV2Run, "id" | "ordinal" | "sta
 
 export type PendingBackgroundWorkPullRequest = Pick<
   ThreadPullRequestLink,
-  "host" | "repository" | "number" | "url" | "source" | "watch"
+  "host" | "repository" | "number" | "url" | "source" | "watch" | "followup"
 > & {
   readonly snapshot: Pick<NonNullable<ThreadPullRequestLink["snapshot"]>, "state"> | null;
 };
@@ -295,10 +295,9 @@ export function watchedPullRequests<Link extends PendingBackgroundWorkPullReques
 ): Array<Link> {
   return (pullRequests ?? []).filter(
     (link) =>
-      // The watch reactor ends a merged PR's watch without waking the agent, so it holds nothing.
-      link.watch !== undefined &&
+      (link.watch !== undefined || hasPendingPullRequestFollowup(link)) &&
       link.source !== "stack-dismissed" &&
-      link.snapshot?.state !== "merged",
+      (link.snapshot?.state !== "merged" || hasPendingPullRequestFollowup(link)),
   );
 }
 
@@ -317,7 +316,9 @@ function pullRequestWatchTasks(
 ): Array<PendingBackgroundWorkTask> {
   return watchedPullRequests(pullRequests).map((link) => ({
     taskId: pullRequestWatchTaskId(link),
-    description: `Watching pull request #${link.number}`,
+    description: hasPendingPullRequestFollowup(link)
+      ? `Pull request #${link.number} followup ${link.followup?.status}`
+      : `Watching pull request #${link.number}`,
     kind: "monitor" as const,
     awaited: true as const,
   }));

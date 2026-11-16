@@ -100,6 +100,7 @@ function toChangeRequest(pullRequest: AzureDevOpsPullRequest): ProviderChangeReq
     headBranch: pullRequest.headBranch,
     baseBranch: pullRequest.baseBranch,
     state: pullRequest.state,
+    mergeSha: pullRequest.mergeSha ?? null,
     isDraft: pullRequest.isDraft,
     mergeability: pullRequest.mergeability,
     // Azure omits line counts; computing them requires both sides of every file.
@@ -124,6 +125,7 @@ function toSummary(pullRequest: AzureDevOpsPullRequest): ProviderChangeRequestSu
     headBranch: pullRequest.headBranch,
     baseBranch: pullRequest.baseBranch,
     state: pullRequest.state,
+    mergeSha: pullRequest.mergeSha ?? null,
     isDraft: pullRequest.isDraft,
     mergeability: pullRequest.mergeability,
     closedAt: pullRequest.state === "closed" ? pullRequest.closedAt : null,

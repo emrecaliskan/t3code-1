@@ -43,6 +43,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
+import * as Result from "effect/Result";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 import * as SqlClient from "effect/sql/SqlClient";
@@ -388,6 +389,108 @@ const layerProjectDeletionTest = Layer.mergeAll(
   Layer.provide(layerGitWorkflowTest),
   Layer.provide(layerPlatformTest),
 );
+
+const seedPendingQuestion = Effect.fnUntraced(function* (
+  threadId: ThreadId,
+  runId: RunId | null,
+  responseCapability: OrchestrationV2RuntimeRequest["responseCapability"],
+) {
+  const eventSink = yield* EventSink.EventSinkV2;
+  const now = yield* DateTime.now;
+  const requestId = RuntimeRequestId.make(`${threadId}:request`);
+  const nodeId = NodeId.make(`${threadId}:node`);
+  const itemId = TurnItemId.make(`${threadId}:item`);
+  yield* eventSink.write({
+    commandId: CommandId.make(`${threadId}:seed`),
+    events: [
+      {
+        id: EventId.make(`${threadId}:node-event`),
+        type: "node.updated",
+        threadId,
+        nodeId,
+        occurredAt: now,
+        payload: {
+          id: nodeId,
+          threadId,
+          runId,
+          parentNodeId: null,
+          rootNodeId: nodeId,
+          kind: "user_input_request",
+          status: "waiting",
+          countsForRun: false,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          runtimeRequestId: requestId,
+          checkpointScopeId: null,
+          startedAt: now,
+          completedAt: null,
+        },
+      },
+      {
+        id: EventId.make(`${threadId}:request-event`),
+        type: "runtime-request.updated",
+        threadId,
+        nodeId,
+        occurredAt: now,
+        payload: {
+          id: requestId,
+          nodeId,
+          providerTurnId: null,
+          nativeRequestRef: null,
+          kind: "user_input",
+          status: "pending",
+          responseCapability,
+          createdAt: now,
+          resolvedAt: null,
+        },
+      },
+      {
+        id: EventId.make(`${threadId}:item-event`),
+        type: "turn-item.updated",
+        threadId,
+        nodeId,
+        occurredAt: now,
+        payload: {
+          id: itemId,
+          type: "user_input_request",
+          threadId,
+          runId,
+          nodeId,
+          providerThreadId: null,
+          providerTurnId: null,
+          nativeItemRef: null,
+          parentItemId: null,
+          ordinal: 0,
+          status: "waiting",
+          title: null,
+          startedAt: now,
+          completedAt: null,
+          updatedAt: now,
+          requestId,
+          questions: [
+            { id: "color", header: "Color", question: "Which color?", options: [] },
+            {
+              id: "sizes",
+              header: "Sizes",
+              question: "Which sizes?",
+              options: [],
+              multiSelect: true,
+            },
+            {
+              id: "note",
+              header: "Note",
+              question: "Anything else?",
+              options: [],
+              required: false,
+            },
+          ],
+        },
+      },
+    ],
+  });
+  return { requestId, nodeId, itemId };
+});
 
 it.layer(layerProjectDeletionTest)("project deletion during thread commands", (it) => {
   it.effect.each(["thread", "project"] as const)(
@@ -1317,108 +1420,6 @@ it.layer(layerTest)("OrchestrationV2LayerLive", (it) => {
       );
     }),
   );
-
-  const seedPendingQuestion = Effect.fnUntraced(function* (
-    threadId: ThreadId,
-    runId: RunId | null,
-    responseCapability: OrchestrationV2RuntimeRequest["responseCapability"],
-  ) {
-    const eventSink = yield* EventSink.EventSinkV2;
-    const now = yield* DateTime.now;
-    const requestId = RuntimeRequestId.make(`${threadId}:request`);
-    const nodeId = NodeId.make(`${threadId}:node`);
-    const itemId = TurnItemId.make(`${threadId}:item`);
-    yield* eventSink.write({
-      commandId: CommandId.make(`${threadId}:seed`),
-      events: [
-        {
-          id: EventId.make(`${threadId}:node-event`),
-          type: "node.updated",
-          threadId,
-          nodeId,
-          occurredAt: now,
-          payload: {
-            id: nodeId,
-            threadId,
-            runId,
-            parentNodeId: null,
-            rootNodeId: nodeId,
-            kind: "user_input_request",
-            status: "waiting",
-            countsForRun: false,
-            providerThreadId: null,
-            providerTurnId: null,
-            nativeItemRef: null,
-            runtimeRequestId: requestId,
-            checkpointScopeId: null,
-            startedAt: now,
-            completedAt: null,
-          },
-        },
-        {
-          id: EventId.make(`${threadId}:request-event`),
-          type: "runtime-request.updated",
-          threadId,
-          nodeId,
-          occurredAt: now,
-          payload: {
-            id: requestId,
-            nodeId,
-            providerTurnId: null,
-            nativeRequestRef: null,
-            kind: "user_input",
-            status: "pending",
-            responseCapability,
-            createdAt: now,
-            resolvedAt: null,
-          },
-        },
-        {
-          id: EventId.make(`${threadId}:item-event`),
-          type: "turn-item.updated",
-          threadId,
-          nodeId,
-          occurredAt: now,
-          payload: {
-            id: itemId,
-            type: "user_input_request",
-            threadId,
-            runId,
-            nodeId,
-            providerThreadId: null,
-            providerTurnId: null,
-            nativeItemRef: null,
-            parentItemId: null,
-            ordinal: 0,
-            status: "waiting",
-            title: null,
-            startedAt: now,
-            completedAt: null,
-            updatedAt: now,
-            requestId,
-            questions: [
-              { id: "color", header: "Color", question: "Which color?", options: [] },
-              {
-                id: "sizes",
-                header: "Sizes",
-                question: "Which sizes?",
-                options: [],
-                multiSelect: true,
-              },
-              {
-                id: "note",
-                header: "Note",
-                question: "Anything else?",
-                options: [],
-                required: false,
-              },
-            ],
-          },
-        },
-      ],
-    });
-    return { requestId, nodeId, itemId };
-  });
 
   it.effect.each([
     { trigger: "startup", scope: "run" },
@@ -2997,6 +2998,484 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         "manual",
       );
     }),
+  );
+
+  it.effect.each([
+    "hold",
+    "release",
+    "stop",
+    "settle",
+    "archive",
+    "snooze",
+    "unknown",
+    "closed",
+    "unwatch",
+    "queued-cancel",
+    "queued-hold",
+    "queued-ack",
+    "operator-request",
+    "competing",
+    "unlink",
+  ] as const)(
+    "landing followup respects deliberate dispositions and independent watching: %s",
+    (scenario) =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const projectId = ProjectId.make(`followup-${scenario}`);
+        const threadId = ThreadId.make(`followup-${scenario}`);
+        yield* seedProject({
+          projectId,
+          title: "Followup",
+          workspaceRoot: `/workspace/${scenario}`,
+          defaultModelSelection: null,
+          createdAt: "2026-10-01T00:00:00.000Z",
+        });
+        const create = (id: ThreadId) =>
+          orchestrator.dispatch({
+            type: "thread.create",
+            commandId: CommandId.make(`create-${id}`),
+            threadId: id,
+            projectId,
+            title: "Followup",
+            modelSelection,
+            runtimeMode: "full-access",
+            interactionMode: "default",
+            createdBy: "user",
+            creationSource: "web",
+            branch: null,
+            worktreePath: null,
+          });
+        yield* create(threadId);
+        const key = { host: "github.com", repository: `acme/${scenario}`, number: 7 };
+        const link = (id: ThreadId) =>
+          orchestrator.dispatch({
+            type: "thread.pull-request.link",
+            commandId: CommandId.make(`link-${id}`),
+            threadId: id,
+            ...key,
+            url: `https://github.com/acme/${scenario}/pull/7`,
+            source: "agent",
+          });
+        yield* link(threadId);
+        const register = (id: ThreadId, suffix: string) =>
+          orchestrator.dispatch({
+            type: "thread.pull-request.followup",
+            commandId: CommandId.make(`register-${id}-${suffix}`),
+            threadId: id,
+            ...key,
+            action: { type: "register", reviewedHead: "reviewed", intendedBase: "main" },
+          });
+        const other = ThreadId.make(`${threadId}-other`);
+        yield* create(other);
+        yield* link(other);
+        if (scenario === "competing") {
+          const results = yield* Effect.forEach(
+            [threadId, other],
+            (id) => register(id, "competing").pipe(Effect.result),
+            { concurrency: 2 },
+          );
+          assert.lengthOf(results.filter(Result.isSuccess), 1);
+          assert.lengthOf(results.filter(Result.isFailure), 1);
+          return;
+        }
+        yield* register(threadId, "first");
+        assert.equal(
+          (yield* register(other, "competing").pipe(Effect.flip))._tag,
+          "OrchestratorDispatchError",
+        );
+        let watchSequence = 0;
+        const initial = (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.followup;
+        assert.isDefined(initial);
+        if (!initial) return;
+        if (scenario === "unlink") {
+          assert.equal(
+            (yield* orchestrator
+              .dispatch({
+                type: "thread.pull-request.unlink",
+                commandId: CommandId.make("pending-unlink"),
+                threadId,
+                ...key,
+              })
+              .pipe(Effect.flip))._tag,
+            "OrchestratorDispatchError",
+          );
+          yield* orchestrator.dispatch({
+            type: "thread.pull-request.followup",
+            commandId: CommandId.make("unlink-release"),
+            threadId,
+            ...key,
+            action: {
+              type: "release",
+              generation: initial.generation,
+              reason: "Cancelled landing",
+            },
+          });
+          yield* orchestrator.dispatch({
+            type: "thread.pull-request.unlink",
+            commandId: CommandId.make("released-unlink"),
+            threadId,
+            ...key,
+          });
+          yield* orchestrator.dispatch({
+            type: "thread.pull-request.link",
+            commandId: CommandId.make("relink"),
+            threadId,
+            ...key,
+            url: `https://github.com/acme/${scenario}/pull/7`,
+            source: "agent",
+          });
+          yield* register(threadId, "next");
+          assert.equal(
+            (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.followup?.generation,
+            initial.generation + 1,
+          );
+          return;
+        }
+        if (scenario === "hold" || scenario === "release") {
+          yield* orchestrator.dispatch({
+            type: "thread.pull-request.followup",
+            commandId: CommandId.make(`disposition-${scenario}`),
+            threadId,
+            ...key,
+            action: { type: scenario, generation: initial.generation, reason: "Human handback" },
+          });
+        } else if (scenario === "stop") {
+          yield* orchestrator.dispatch({
+            type: "thread.stop",
+            commandId: CommandId.make(`stop-${scenario}`),
+            threadId,
+          });
+        } else if (scenario === "settle" || scenario === "archive") {
+          yield* orchestrator.dispatch({
+            type: scenario === "settle" ? "thread.settle" : "thread.archive",
+            commandId: CommandId.make(`disposition-${scenario}`),
+            threadId,
+          });
+        } else if (scenario === "snooze") {
+          yield* orchestrator.dispatch({
+            type: "thread.snooze",
+            commandId: CommandId.make("followup-snooze"),
+            threadId,
+            snoozedUntil: DateTime.formatIso(DateTime.add(yield* DateTime.now, { hours: 1 })),
+          });
+        } else if (scenario === "unwatch") {
+          for (const watching of [true, false, true, false]) {
+            yield* orchestrator.dispatch({
+              type: "thread.pull-request.watch",
+              commandId: CommandId.make(`followup-watch-${watching}-${++watchSequence}`),
+              threadId,
+              ...key,
+              watching,
+            });
+          }
+          assert.deepEqual(
+            (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.followup,
+            initial,
+          );
+        } else if (scenario === "operator-request") {
+          yield* seedPendingQuestion(threadId, null, { type: "message" });
+        } else if (
+          scenario === "queued-cancel" ||
+          scenario === "queued-hold" ||
+          scenario === "queued-ack"
+        ) {
+          yield* orchestrator.dispatch({
+            type: "message.dispatch",
+            commandId: CommandId.make(`active-${scenario}`),
+            threadId,
+            messageId: MessageId.make(`active-${scenario}`),
+            text: "Working",
+            attachments: [],
+            dispatchMode: { type: "start_immediately" },
+            createdBy: "user",
+            creationSource: "web",
+          });
+        }
+        const snapshot = {
+          state: scenario === "closed" ? ("closed" as const) : ("merged" as const),
+          title: "Landing",
+          headBranch: "feature",
+          baseBranch: "main",
+          isDraft: false,
+          updatedAt: null,
+          syncedAt: "2026-11-16T12:00:00.000Z",
+          mergedAt: "2026-11-16T12:00:00.000Z",
+          mergeSha: scenario === "unknown" ? null : "actual-merge",
+        };
+        yield* orchestrator.dispatch({
+          type: "thread.pull-request-link.sync",
+          commandId: CommandId.make(`terminal-${scenario}`),
+          threadId,
+          ...key,
+          snapshot,
+          stack: null,
+        });
+        let state = (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.followup;
+        const muted = [
+          "hold",
+          "release",
+          "stop",
+          "settle",
+          "archive",
+          "snooze",
+          "unknown",
+          "operator-request",
+        ].includes(scenario);
+        const records = yield* orchestrator.getThreadRecords(threadId, ["messages", "runs"]);
+        assert.lengthOf(
+          records.messages.filter((message) => message.id.startsWith("pr-followup:")),
+          muted ? 0 : 1,
+        );
+        if (scenario === "unknown") assert.equal(state?.status, "awaiting_terminal");
+        if (scenario === "closed") {
+          assert.equal(state?.status, "verification_pending");
+          if (state?.status === "verification_pending") assert.equal(state.terminal.type, "closed");
+        }
+        if (
+          scenario === "queued-cancel" ||
+          scenario === "queued-hold" ||
+          scenario === "queued-ack"
+        ) {
+          const queued = records.runs.find((run) => run.status === "queued");
+          assert.isDefined(queued);
+          if (!queued || !state) return;
+          yield* scenario === "queued-cancel"
+            ? orchestrator.dispatch({
+                type: "queued-run.cancel",
+                commandId: CommandId.make(`cancel-${scenario}`),
+                threadId,
+                runId: queued.id,
+              })
+            : orchestrator.dispatch({
+                type: "thread.pull-request.followup",
+                commandId: CommandId.make(`hold-${scenario}`),
+                threadId,
+                ...key,
+                action:
+                  scenario === "queued-ack"
+                    ? {
+                        type: "acknowledge",
+                        generation: state.generation,
+                        result: { type: "merged", mergeSha: "actual-merge", base: "main" },
+                        evidence: "Verified the actual merge on main",
+                      }
+                    : { type: "hold", generation: state.generation, reason: "Operator takes over" },
+              });
+          state = (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.followup;
+          assert.equal(state?.status, scenario === "queued-ack" ? "acknowledged" : "held");
+          assert.equal(
+            (yield* orchestrator.getThreadRecords(threadId, ["runs"])).runs.find(
+              (run) => run.id === queued.id,
+            )?.status,
+            "cancelled",
+          );
+        }
+        yield* orchestrator.dispatch({
+          type: "thread.pull-request-followup.reconcile",
+          commandId: CommandId.make(`late-${scenario}`),
+          threadId,
+          ...key,
+        });
+        assert.deepEqual(
+          (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.followup,
+          state,
+        );
+      }),
+  );
+
+  it.effect(
+    "keeps a landing obligation pending until exact merge verification is acknowledged",
+    () =>
+      Effect.gen(function* () {
+        const orchestrator = yield* Orchestrator.OrchestratorV2;
+        const maintenance = yield* ProjectionReplay.ProjectionReplay;
+        const threadId = ThreadId.make("runtime-pr-followup");
+        yield* seedProject({
+          projectId: ProjectId.make("followup-project"),
+          title: "Followup",
+          workspaceRoot: "/workspace/followup",
+          defaultModelSelection: null,
+          createdAt: "2026-10-01T00:00:00.000Z",
+        });
+        const key = { host: "github.com", repository: "acme/app", number: 7 };
+        yield* orchestrator.dispatch({
+          type: "thread.create",
+          commandId: CommandId.make("followup-create"),
+          threadId,
+          projectId: ProjectId.make("followup-project"),
+          title: "Verify landing",
+          modelSelection,
+          runtimeMode: "full-access",
+          interactionMode: "default",
+          createdBy: "user",
+          creationSource: "web",
+          branch: null,
+          worktreePath: null,
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.pull-request.link",
+          commandId: CommandId.make("followup-link"),
+          threadId,
+          ...key,
+          url: "https://github.com/acme/app/pull/7",
+          source: "agent",
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.pull-request.followup",
+          commandId: CommandId.make("followup-register"),
+          threadId,
+          ...key,
+          action: { type: "register", reviewedHead: "reviewed-head", intendedBase: "main" },
+        });
+        const followup = (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]
+          ?.followup;
+        assert.equal(followup?.status, "awaiting_terminal");
+        const before = (yield* orchestrator.getThreadShell(threadId))!;
+        const settlement = yield* orchestrator
+          .dispatch({
+            type: "thread.auto-settle",
+            commandId: CommandId.make("followup-stale-settle"),
+            threadId,
+            snapshotAt: before.updatedAt,
+          })
+          .pipe(Effect.flip);
+        assert.equal(settlement._tag, "OrchestratorDispatchError");
+        yield* orchestrator.dispatch({
+          type: "thread.pull-request-link.sync",
+          commandId: CommandId.make("followup-terminal"),
+          threadId,
+          ...key,
+          snapshot: {
+            state: "merged",
+            title: "Landing",
+            headBranch: "feature",
+            baseBranch: "main",
+            isDraft: false,
+            updatedAt: null,
+            syncedAt: "2026-11-16T12:00:00.000Z",
+            mergedAt: "2026-11-16T12:00:00.000Z",
+            mergeSha: "actual-merge",
+          },
+          stack: null,
+        });
+        let pending = (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.followup;
+        assert.equal(pending?.status, "verification_pending");
+        const records = yield* orchestrator.getThreadRecords(threadId, ["messages", "runs"]);
+        assert.lengthOf(records.messages, 1);
+        assert.include(records.messages[0]?.text, "actual-merge");
+        assert.include(records.messages[0]?.text, "main");
+        yield* orchestrator.dispatch({
+          type: "thread.pull-request-followup.reconcile",
+          commandId: CommandId.make("followup-duplicate"),
+          threadId,
+          ...key,
+        });
+        assert.lengthOf((yield* orchestrator.getThreadRecords(threadId, ["messages"])).messages, 1);
+        assert.isTrue((yield* maintenance.rebuild).valid);
+        assert.deepEqual(
+          (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.followup,
+          pending,
+        );
+        if (pending?.status !== "verification_pending" || pending.terminal.type !== "merged")
+          return;
+        const sink = yield* EventSink.EventSinkV2;
+        for (const attempt of [1, 2, 3]) {
+          if (pending?.status !== "verification_pending") return;
+          const recoveryMessageId: MessageId = pending.messageId;
+          const run: OrchestrationV2Run | undefined = (yield* orchestrator.getThreadRecords(
+            threadId,
+            ["runs"],
+          )).runs.find((run) => run.userMessageId === recoveryMessageId);
+          assert.isDefined(run);
+          if (!run) return;
+          const now = yield* DateTime.now;
+          yield* sink.write({
+            commandId: CommandId.make(`followup-complete-${attempt}`),
+            events: [
+              {
+                id: EventId.make(`followup-completed-${attempt}`),
+                type: "run.updated",
+                threadId,
+                runId: run.id,
+                occurredAt: now,
+                payload: { ...run, status: "completed", completedAt: now },
+              },
+            ],
+          });
+          assert.equal(
+            (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.followup?.status,
+            "verification_pending",
+          );
+          assert.isTrue((yield* maintenance.rebuild).valid);
+          yield* TestClock.adjust("15 minutes");
+          yield* orchestrator.dispatch({
+            type: "thread.pull-request-followup.reconcile",
+            commandId: CommandId.make(`followup-recovery-${attempt}`),
+            threadId,
+            ...key,
+          });
+          pending = (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.followup;
+          assert.equal(pending?.status, "verification_pending");
+          if (pending?.status !== "verification_pending") return;
+          assert.equal(pending.attempts, Math.min(attempt + 1, 3));
+          assert.lengthOf(
+            (yield* orchestrator.getThreadRecords(threadId, ["messages"])).messages,
+            Math.min(attempt + 1, 3),
+          );
+        }
+        yield* orchestrator.dispatch({
+          type: "thread.pull-request.link",
+          commandId: CommandId.make("followup-sibling-link"),
+          threadId,
+          ...key,
+          number: 8,
+          url: "https://github.com/acme/app/pull/8",
+          source: "agent",
+        });
+        yield* orchestrator.dispatch({
+          type: "thread.pull-request.followup",
+          commandId: CommandId.make("followup-sibling-register"),
+          threadId,
+          ...key,
+          number: 8,
+          action: { type: "register", reviewedHead: "sibling-head", intendedBase: "main" },
+        });
+        const ack = {
+          type: "acknowledge" as const,
+          generation: pending.generation,
+          result: { type: "merged" as const, mergeSha: "actual-merge", base: "main" },
+          evidence: "Verified actual-merge on origin/main with git merge-base --is-ancestor.",
+        };
+        const wrong = yield* orchestrator
+          .dispatch({
+            type: "thread.pull-request.followup",
+            commandId: CommandId.make("followup-wrong-ack"),
+            threadId,
+            ...key,
+            action: { ...ack, result: { ...ack.result, mergeSha: "reviewed-head" } },
+          })
+          .pipe(Effect.flip);
+        assert.equal(wrong._tag, "OrchestratorDispatchError");
+        for (const suffix of ["first", "replay"]) {
+          yield* orchestrator.dispatch({
+            type: "thread.pull-request.followup",
+            commandId: CommandId.make(`followup-ack-${suffix}`),
+            threadId,
+            ...key,
+            action: ack,
+          });
+        }
+        assert.equal(
+          (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.followup?.status,
+          "acknowledged",
+        );
+        assert.equal(
+          (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.find(
+            (link) => link.number === 8,
+          )?.followup?.status,
+          "awaiting_terminal",
+        );
+      }),
   );
 
   it.effect("starts, records, and stops a pull request watch", () =>

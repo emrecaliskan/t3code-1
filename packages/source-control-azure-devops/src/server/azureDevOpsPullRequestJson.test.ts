@@ -66,9 +66,14 @@ describe("decodePullRequestListJson", () => {
     ["completed", "merged"],
     ["something new", "open"],
   ])("reads the %s status as %s", (status, expected) => {
-    const batch = expectSuccess(decodePullRequestListJson(asJson([pullRequest({ status })])));
+    const batch = expectSuccess(
+      decodePullRequestListJson(
+        asJson([pullRequest({ status, lastMergeCommit: { commitId: "actual-merge" } })]),
+      ),
+    );
 
     expect(batch.items[0]?.state).toBe(expected);
+    expect(batch.items[0]?.mergeSha).toBe("actual-merge");
   });
 
   it.each([

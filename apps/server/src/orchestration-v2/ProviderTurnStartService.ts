@@ -15,6 +15,7 @@ import {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import { canStartPullRequestFollowup } from "./pullRequestFollowup.ts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -348,6 +349,22 @@ export const layer: Layer.Layer<
       }
       if (run.status !== "starting") {
         return;
+      }
+      const requests = run.userMessageId.startsWith("pr-followup:")
+        ? (yield* projectionStore.getThreadRecords(input.threadId, ["runtimeRequests"]))
+            .runtimeRequests
+        : [];
+      if (
+        run.userMessageId.startsWith("pr-followup:") &&
+        !canStartPullRequestFollowup(
+          { ...projection, runtimeRequests: requests },
+          run.userMessageId,
+        )
+      ) {
+        return yield* new ProviderTurnStartError({
+          runId,
+          cause: "Pull request followup admission was withdrawn.",
+        });
       }
       const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
       const attempt = projection.attempts.find((candidate) => candidate.id === run.activeAttemptId);
@@ -1701,7 +1718,16 @@ export const layer: Layer.Layer<
           (legacyInputRunIds.size > 0 &&
             sameNativeThread &&
             !acceptedAttempts.some((source) => source.nativeThreadId !== undefined)),
-        shouldStartProviderTurn: runControls.shouldStartProviderTurn,
+        shouldStartProviderTurn: run.userMessageId.startsWith("pr-followup:")
+          ? Effect.fn("ProviderTurnStartService.canStartPullRequestFollowup")(function* () {
+              if (!(yield* runControls.shouldStartProviderTurn())) return false;
+              const current = yield* projectionStore.getThreadRecords(input.threadId, [
+                "providerThreads",
+                "runtimeRequests",
+              ]);
+              return canStartPullRequestFollowup(current, run.userMessageId);
+            })
+          : runControls.shouldStartProviderTurn,
         shouldFinalizeRun: runControls.shouldFinalizeRun,
         hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,
         loadRunInterruptReason: runControls.loadRunInterruptReason,

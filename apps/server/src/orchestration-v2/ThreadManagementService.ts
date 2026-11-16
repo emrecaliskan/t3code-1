@@ -1,3 +1,5 @@
+import { type ThreadPullRequestLink } from "@t3tools/contracts";
+import { threadPullRequestKeysEqual } from "../sourceControl/threadPullRequests.ts";
 import type {
   OrchestrationV2SearchThreadInput,
   OrchestrationV2SearchThreadResult,
@@ -360,6 +362,16 @@ export type ThreadManagementError = typeof ThreadManagementError.Type;
 type ThreadManagementFailure = ThreadManagementError | Orchestrator.OrchestratorV2Error;
 
 export interface ThreadManagementServiceShape {
+  readonly updatePullRequestFollowup: (
+    command: Extract<
+      OrchestrationV2ServerCommand,
+      { readonly type: "thread.pull-request.followup" }
+    >,
+  ) => Effect.Effect<
+    ThreadPullRequestLink | undefined,
+    Orchestrator.OrchestratorV2Error | ThreadManagementProviderInstanceDisabledError
+  >;
+
   readonly searchThreadStream: (
     input: OrchestrationV2SearchThreadInput,
   ) => Stream.Stream<OrchestrationV2SearchThreadResult, Orchestrator.OrchestratorV2Error>;
@@ -1534,6 +1546,13 @@ const make = Effect.gen(function* () {
   });
 
   return ThreadManagementService.of({
+    updatePullRequestFollowup: Effect.fn("ThreadManagementService.updatePullRequestFollowup")(
+      function* (command) {
+        yield* dispatch(command);
+        const thread = yield* orchestrator.getThreadShell(command.threadId);
+        return thread?.pullRequests?.find((link) => threadPullRequestKeysEqual(link, command));
+      },
+    ),
     ensureLegacyTranscript,
     searchThreadStream: (input) =>
       Stream.unwrap(

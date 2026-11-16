@@ -1333,7 +1333,8 @@ it.effect("returns the host's merged reply as a summary and trusts it without an
         isDraft: false,
         updatedAt: mergedAt,
         mergedAt,
-        headSha: "abc123",
+        headSha: "reviewed-head",
+        mergeSha: "actual-merge",
         autoMergeEnabled: false,
       };
       let summaryReads = 0;

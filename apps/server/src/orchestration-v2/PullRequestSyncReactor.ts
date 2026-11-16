@@ -17,6 +17,10 @@ import {
   visibleThreadPullRequests,
 } from "../sourceControl/threadPullRequests.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
+import {
+  PULL_REQUEST_FOLLOWUP_RETRY_MS,
+  PULL_REQUEST_FOLLOWUP_MAX_ATTEMPTS,
+} from "./pullRequestFollowup.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -207,6 +211,7 @@ function snapshotFieldsOf(summary: PullRequestSummary): SnapshotFields {
     updatedAt: summary.updatedAt,
     closedAt: summary.closedAt ?? null,
     mergedAt: summary.mergedAt ?? null,
+    mergeSha: summary.mergeSha ?? null,
     ...(summary.author === undefined ? {} : { author: summary.author }),
     ...(summary.additions === undefined ? {} : { additions: summary.additions }),
     ...(summary.deletions === undefined ? {} : { deletions: summary.deletions }),
@@ -255,6 +260,7 @@ function snapshotFieldsEqual(left: SnapshotFields, right: SnapshotFields): boole
     left.updatedAt === right.updatedAt &&
     (left.closedAt ?? null) === (right.closedAt ?? null) &&
     (left.mergedAt ?? null) === (right.mergedAt ?? null) &&
+    (left.mergeSha ?? null) === (right.mergeSha ?? null) &&
     (left.author?.login ?? null) === (right.author?.login ?? null) &&
     avatarIdentity(left.author?.avatarUrl) === avatarIdentity(right.author?.avatarUrl) &&
     left.additions === right.additions &&
@@ -353,10 +359,10 @@ export const make = Effect.gen(function* () {
     if (requested.has(key) || retryStacks.has(key)) return true;
     if (entries.some((entry) => entry.link.snapshot === null)) return true;
     const active = entries.filter((entry) => isUnsettled(entry.thread));
-    // Merged snapshots without mergedAt cannot settle threads; reread slowly until supplied.
+    // Terminal snapshots remain refreshable until the host supplies merge evidence.
     const isFinal = ({ link: { snapshot } }: LinkEntry) =>
       snapshot?.state === "merged"
-        ? snapshot.mergedAt != null
+        ? snapshot.mergedAt != null && snapshot.mergeSha != null
         : snapshot?.state === "closed" &&
           nowMs - Date.parse(snapshot.closedAt ?? "") >= CLOSED_FINAL_AFTER_MS;
     if (active.every(isFinal)) return false;
@@ -383,6 +389,43 @@ export const make = Effect.gen(function* () {
     const now = yield* DateTime.now;
     const nowMs = DateTime.toEpochMillis(now);
     const nowIso = DateTime.formatIso(now);
+    for (const thread of threads) {
+      for (const link of visibleThreadPullRequests(thread.pullRequests ?? [])) {
+        if (
+          link.followup?.status !== "awaiting_terminal" &&
+          link.followup?.status !== "verification_pending"
+        )
+          continue;
+        const followup = link.followup;
+        if (
+          followup.status === "awaiting_terminal" &&
+          link.snapshot?.state !== "closed" &&
+          !(link.snapshot?.state === "merged" && link.snapshot.mergeSha != null)
+        )
+          continue;
+        if (
+          followup.status === "verification_pending" &&
+          (followup.attempts >= PULL_REQUEST_FOLLOWUP_MAX_ATTEMPTS ||
+            nowMs - Date.parse(followup.lastAttemptAt) < PULL_REQUEST_FOLLOWUP_RETRY_MS)
+        )
+          continue;
+        const uuid = yield* random.uuidV4();
+        yield* engine
+          .dispatch({
+            type: "thread.pull-request-followup.reconcile",
+            commandId: CommandId.make(`server:pr-followup:${thread.id}:${uuid}`),
+            threadId: thread.id,
+            host: link.host,
+            repository: link.repository,
+            number: link.number,
+          })
+          .pipe(
+            Effect.catchCause(
+              logSkipped("pull request followup recovery deferred", { threadId: thread.id }),
+            ),
+          );
+      }
+    }
 
     const groups = new Map<string, Array<LinkEntry>>();
     for (const thread of threads) {
@@ -483,7 +526,9 @@ export const make = Effect.gen(function* () {
       // A held merged summary is served without asking the host, so a snapshot still missing its
       // merge time has to drop it or the slow-cadence re-read would hand back the same gap.
       const missingMergedAt = entries.some(
-        (entry) => entry.link.snapshot?.state === "merged" && entry.link.snapshot.mergedAt == null,
+        (entry) =>
+          entry.link.snapshot?.state === "merged" &&
+          (entry.link.snapshot.mergedAt == null || entry.link.snapshot.mergeSha == null),
       );
       // A stack retry reads past the cache, or it could get back the layer list it is retrying.
       const invalidated = refreshRequested || missingMergedAt || retryStacks.has(key);

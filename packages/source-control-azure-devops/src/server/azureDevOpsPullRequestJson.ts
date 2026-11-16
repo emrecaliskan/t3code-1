@@ -48,6 +48,9 @@ const RawPullRequestSchema = Schema.Struct({
   targetRefName: TrimmedNonEmptyString,
   creationDate: TrimmedNonEmptyString,
   closedDate: Schema.optional(Schema.NullOr(Schema.String)),
+  lastMergeCommit: Schema.optional(
+    Schema.NullOr(Schema.Struct({ commitId: Schema.optional(Schema.NullOr(Schema.String)) })),
+  ),
   url: Schema.optional(Schema.NullOr(Schema.String)),
   repository: Schema.optional(
     Schema.NullOr(
@@ -121,6 +124,7 @@ export interface AzureDevOpsPullRequest {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly closedAt: string | null;
+  readonly mergeSha?: string | null | undefined;
   readonly body: string;
   readonly reviewRequestLogins: ReadonlyArray<string>;
   readonly reviewers: ReadonlyArray<PullRequestActor>;
@@ -222,6 +226,7 @@ function toPullRequest(
     createdAt: raw.creationDate,
     updatedAt: closedAt ?? raw.creationDate,
     closedAt,
+    mergeSha: trimmed(raw.lastMergeCommit?.commitId),
     body: raw.description ?? "",
     reviewRequestLogins: reviewers.map((reviewer) => reviewer.login),
     reviewers,
