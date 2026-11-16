@@ -3013,6 +3013,8 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
     "queued-cancel",
     "queued-hold",
     "queued-ack",
+    "queued-snooze",
+    "queued-recovery",
     "operator-request",
     "competing",
     "unlink",
@@ -3174,11 +3176,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           );
         } else if (scenario === "operator-request") {
           yield* seedPendingQuestion(threadId, null, { type: "message" });
-        } else if (
-          scenario === "queued-cancel" ||
-          scenario === "queued-hold" ||
-          scenario === "queued-ack"
-        ) {
+        } else if (scenario.startsWith("queued-")) {
           yield* orchestrator.dispatch({
             type: "message.dispatch",
             commandId: CommandId.make(`active-${scenario}`),
@@ -3231,36 +3229,43 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           assert.equal(state?.status, "verification_pending");
           if (state?.status === "verification_pending") assert.equal(state.terminal.type, "closed");
         }
-        if (
-          scenario === "queued-cancel" ||
-          scenario === "queued-hold" ||
-          scenario === "queued-ack"
-        ) {
+        if (scenario.startsWith("queued-")) {
           const queued = records.runs.find((run) => run.status === "queued");
           assert.isDefined(queued);
           if (!queued || !state) return;
-          yield* scenario === "queued-cancel"
+          yield* scenario === "queued-snooze" || scenario === "queued-recovery"
             ? orchestrator.dispatch({
-                type: "queued-run.cancel",
-                commandId: CommandId.make(`cancel-${scenario}`),
+                type: "thread.snooze",
+                commandId: CommandId.make(`queued-followup-snooze-${scenario}`),
                 threadId,
-                runId: queued.id,
+                snoozedUntil: DateTime.formatIso(DateTime.add(yield* DateTime.now, { hours: 1 })),
               })
-            : orchestrator.dispatch({
-                type: "thread.pull-request.followup",
-                commandId: CommandId.make(`hold-${scenario}`),
-                threadId,
-                ...key,
-                action:
-                  scenario === "queued-ack"
-                    ? {
-                        type: "acknowledge",
-                        generation: state.generation,
-                        result: { type: "merged", mergeSha: "actual-merge", base: "main" },
-                        evidence: "Verified the actual merge on main",
-                      }
-                    : { type: "hold", generation: state.generation, reason: "Operator takes over" },
-              });
+            : scenario === "queued-cancel"
+              ? orchestrator.dispatch({
+                  type: "queued-run.cancel",
+                  commandId: CommandId.make(`cancel-${scenario}`),
+                  threadId,
+                  runId: queued.id,
+                })
+              : orchestrator.dispatch({
+                  type: "thread.pull-request.followup",
+                  commandId: CommandId.make(`hold-${scenario}`),
+                  threadId,
+                  ...key,
+                  action:
+                    scenario === "queued-ack"
+                      ? {
+                          type: "acknowledge",
+                          generation: state.generation,
+                          result: { type: "merged", mergeSha: "actual-merge", base: "main" },
+                          evidence: "Verified the actual merge on main",
+                        }
+                      : {
+                          type: "hold",
+                          generation: state.generation,
+                          reason: "Operator takes over",
+                        },
+                });
           state = (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.followup;
           assert.equal(state?.status, scenario === "queued-ack" ? "acknowledged" : "held");
           assert.equal(
@@ -3269,6 +3274,68 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
             )?.status,
             "cancelled",
           );
+        }
+        if (scenario === "queued-recovery") {
+          const sink = yield* EventSink.EventSinkV2;
+          const now = yield* DateTime.now;
+          yield* sink.write({
+            commandId: CommandId.make("restore-obsolete-followup-queue"),
+            events: records.runs.map((run) => ({
+              id: EventId.make(`restore-obsolete-${run.id}`),
+              type: "run.updated" as const,
+              threadId,
+              runId: run.id,
+              occurredAt: now,
+              payload:
+                run.status === "queued"
+                  ? run
+                  : { ...run, status: "completed" as const, completedAt: now },
+            })),
+          });
+          yield* orchestrator.dispatch({
+            type: "thread.unsnooze",
+            commandId: CommandId.make("resume-followup-owner"),
+            threadId,
+            reason: "user",
+          });
+          yield* orchestrator.dispatch({
+            type: "queue.resume",
+            commandId: CommandId.make("resume-followup-queue"),
+            threadId,
+          });
+          yield* register(threadId, "replacement");
+          const recovered = yield* orchestrator.getThreadRecords(threadId, ["runs"]);
+          const obsolete = records.runs.find((run) => run.status === "queued");
+          assert.equal(recovered.runs.find((run) => run.id === obsolete?.id)?.status, "cancelled");
+          state = (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.followup;
+          assert.equal(state?.generation, initial.generation + 1);
+          assert.equal(state?.status, "verification_pending");
+          if (state?.status === "verification_pending") {
+            const replacementMessage = state.messageId;
+            assert.equal(
+              recovered.runs.find((run) => run.userMessageId === replacementMessage)?.status,
+              "starting",
+            );
+          }
+        }
+        if (scenario === "release" || scenario === "queued-ack") {
+          if (scenario === "release") yield* register(other, "new-owner");
+          const terminalState = state;
+          for (const type of ["hold", "release"] as const) {
+            yield* orchestrator
+              .dispatch({
+                type: "thread.pull-request.followup",
+                commandId: CommandId.make(`stale-${scenario}-${type}`),
+                threadId,
+                ...key,
+                action: { type, generation: initial.generation, reason: "Delayed disposition" },
+              })
+              .pipe(Effect.result);
+            assert.deepEqual(
+              (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.followup,
+              terminalState,
+            );
+          }
         }
         yield* orchestrator.dispatch({
           type: "thread.pull-request-followup.reconcile",
@@ -3283,26 +3350,26 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
       }),
   );
 
-  it.effect(
-    "keeps a landing obligation pending until exact merge verification is acknowledged",
-    () =>
+  it.effect.each(["acknowledge", "exhaust"] as const)(
+    "keeps a landing obligation pending until exact merge verification is acknowledged: %s",
+    (disposition) =>
       Effect.gen(function* () {
         const orchestrator = yield* Orchestrator.OrchestratorV2;
         const maintenance = yield* ProjectionReplay.ProjectionReplay;
-        const threadId = ThreadId.make("runtime-pr-followup");
+        const threadId = ThreadId.make(`runtime-pr-followup-${disposition}`);
         yield* seedProject({
-          projectId: ProjectId.make("followup-project"),
+          projectId: ProjectId.make(`followup-project-${disposition}`),
           title: "Followup",
           workspaceRoot: "/workspace/followup",
           defaultModelSelection: null,
           createdAt: "2026-10-01T00:00:00.000Z",
         });
-        const key = { host: "github.com", repository: "acme/app", number: 7 };
+        const key = { host: "github.com", repository: `acme/app-${disposition}`, number: 7 };
         yield* orchestrator.dispatch({
           type: "thread.create",
-          commandId: CommandId.make("followup-create"),
+          commandId: CommandId.make(`followup-create-${disposition}`),
           threadId,
-          projectId: ProjectId.make("followup-project"),
+          projectId: ProjectId.make(`followup-project-${disposition}`),
           title: "Verify landing",
           modelSelection,
           runtimeMode: "full-access",
@@ -3314,7 +3381,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         });
         yield* orchestrator.dispatch({
           type: "thread.pull-request.link",
-          commandId: CommandId.make("followup-link"),
+          commandId: CommandId.make(`followup-link-${disposition}`),
           threadId,
           ...key,
           url: "https://github.com/acme/app/pull/7",
@@ -3322,7 +3389,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         });
         yield* orchestrator.dispatch({
           type: "thread.pull-request.followup",
-          commandId: CommandId.make("followup-register"),
+          commandId: CommandId.make(`followup-register-${disposition}`),
           threadId,
           ...key,
           action: { type: "register", reviewedHead: "reviewed-head", intendedBase: "main" },
@@ -3334,7 +3401,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         const settlement = yield* orchestrator
           .dispatch({
             type: "thread.auto-settle",
-            commandId: CommandId.make("followup-stale-settle"),
+            commandId: CommandId.make(`followup-stale-settle-${disposition}`),
             threadId,
             snapshotAt: before.updatedAt,
           })
@@ -3342,7 +3409,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         assert.equal(settlement._tag, "OrchestratorDispatchError");
         yield* orchestrator.dispatch({
           type: "thread.pull-request-link.sync",
-          commandId: CommandId.make("followup-terminal"),
+          commandId: CommandId.make(`followup-terminal-${disposition}`),
           threadId,
           ...key,
           snapshot: {
@@ -3366,7 +3433,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         assert.include(records.messages[0]?.text, "main");
         yield* orchestrator.dispatch({
           type: "thread.pull-request-followup.reconcile",
-          commandId: CommandId.make("followup-duplicate"),
+          commandId: CommandId.make(`followup-duplicate-${disposition}`),
           threadId,
           ...key,
         });
@@ -3379,7 +3446,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         if (pending?.status !== "verification_pending" || pending.terminal.type !== "merged")
           return;
         const sink = yield* EventSink.EventSinkV2;
-        for (const attempt of [1, 2, 3]) {
+        for (const attempt of disposition === "exhaust" ? [1, 2, 3] : [1, 2]) {
           if (pending?.status !== "verification_pending") return;
           const recoveryMessageId: MessageId = pending.messageId;
           const run: OrchestrationV2Run | undefined = (yield* orchestrator.getThreadRecords(
@@ -3390,10 +3457,10 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           if (!run) return;
           const now = yield* DateTime.now;
           yield* sink.write({
-            commandId: CommandId.make(`followup-complete-${attempt}`),
+            commandId: CommandId.make(`followup-complete-${disposition}-${attempt}`),
             events: [
               {
-                id: EventId.make(`followup-completed-${attempt}`),
+                id: EventId.make(`followup-completed-${disposition}-${attempt}`),
                 type: "run.updated",
                 threadId,
                 runId: run.id,
@@ -3410,11 +3477,25 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           yield* TestClock.adjust("15 minutes");
           yield* orchestrator.dispatch({
             type: "thread.pull-request-followup.reconcile",
-            commandId: CommandId.make(`followup-recovery-${attempt}`),
+            commandId: CommandId.make(`followup-recovery-${disposition}-${attempt}`),
             threadId,
             ...key,
           });
           pending = (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.followup;
+          if (attempt === 3) {
+            assert.equal(pending?.status, "held");
+            if (pending?.status === "held") assert.include(pending.reason, "acknowledgement");
+            assert.lengthOf(
+              (yield* orchestrator.getThreadRecords(threadId, ["messages"])).messages,
+              3,
+            );
+            assert.isTrue((yield* maintenance.rebuild).valid);
+            assert.deepEqual(
+              (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.followup,
+              pending,
+            );
+            return;
+          }
           assert.equal(pending?.status, "verification_pending");
           if (pending?.status !== "verification_pending") return;
           assert.equal(pending.attempts, Math.min(attempt + 1, 3));
@@ -3425,7 +3506,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         }
         yield* orchestrator.dispatch({
           type: "thread.pull-request.link",
-          commandId: CommandId.make("followup-sibling-link"),
+          commandId: CommandId.make(`followup-sibling-link-${disposition}`),
           threadId,
           ...key,
           number: 8,
@@ -3434,7 +3515,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         });
         yield* orchestrator.dispatch({
           type: "thread.pull-request.followup",
-          commandId: CommandId.make("followup-sibling-register"),
+          commandId: CommandId.make(`followup-sibling-register-${disposition}`),
           threadId,
           ...key,
           number: 8,
@@ -3449,7 +3530,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         const wrong = yield* orchestrator
           .dispatch({
             type: "thread.pull-request.followup",
-            commandId: CommandId.make("followup-wrong-ack"),
+            commandId: CommandId.make(`followup-wrong-ack-${disposition}`),
             threadId,
             ...key,
             action: { ...ack, result: { ...ack.result, mergeSha: "reviewed-head" } },
@@ -3459,7 +3540,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
         for (const suffix of ["first", "replay"]) {
           yield* orchestrator.dispatch({
             type: "thread.pull-request.followup",
-            commandId: CommandId.make(`followup-ack-${suffix}`),
+            commandId: CommandId.make(`followup-ack-${disposition}-${suffix}`),
             threadId,
             ...key,
             action: ack,

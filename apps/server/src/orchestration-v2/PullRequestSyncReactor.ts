@@ -17,10 +17,7 @@ import {
   visibleThreadPullRequests,
 } from "../sourceControl/threadPullRequests.ts";
 import { sourceControlDefinitions } from "../sourceControl/sourceControlDefinitions.ts";
-import {
-  PULL_REQUEST_FOLLOWUP_RETRY_MS,
-  PULL_REQUEST_FOLLOWUP_MAX_ATTEMPTS,
-} from "./pullRequestFollowup.ts";
+import { PULL_REQUEST_FOLLOWUP_RETRY_MS } from "./pullRequestFollowup.ts";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
@@ -359,7 +356,6 @@ export const make = Effect.gen(function* () {
     if (requested.has(key) || retryStacks.has(key)) return true;
     if (entries.some((entry) => entry.link.snapshot === null)) return true;
     const active = entries.filter((entry) => isUnsettled(entry.thread));
-    // Terminal snapshots remain refreshable until the host supplies merge evidence.
     const isFinal = ({ link: { snapshot } }: LinkEntry) =>
       snapshot?.state === "merged"
         ? snapshot.mergedAt != null && snapshot.mergeSha != null
@@ -405,8 +401,7 @@ export const make = Effect.gen(function* () {
           continue;
         if (
           followup.status === "verification_pending" &&
-          (followup.attempts >= PULL_REQUEST_FOLLOWUP_MAX_ATTEMPTS ||
-            nowMs - Date.parse(followup.lastAttemptAt) < PULL_REQUEST_FOLLOWUP_RETRY_MS)
+          nowMs - Date.parse(followup.lastAttemptAt) < PULL_REQUEST_FOLLOWUP_RETRY_MS
         )
           continue;
         const uuid = yield* random.uuidV4();

@@ -1737,9 +1737,37 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
 
+      const obsoleteRuns = projection.runs.filter(
+        (run) =>
+          run.status === "queued" &&
+          run.userMessageId.startsWith("pr-followup:") &&
+          !projection.thread.pullRequests?.some(
+            (link) =>
+              link.followup?.status === "verification_pending" &&
+              link.followup.messageId === run.userMessageId,
+          ),
+      );
+      for (const run of obsoleteRuns) {
+        const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
+        yield* dispatchQueuedRunCancel(
+          {
+            type: "queued-run.cancel",
+            commandId: CommandId.make(`server:pr-followup-retire:${run.id}`),
+            threadId,
+            runId: run.id,
+          },
+          events,
+        );
+        yield* writeSystemEvents(yield* Ref.get(events));
+      }
+      const eligibleProjection = {
+        ...projection,
+        runs: projection.runs.filter((run) => !obsoleteRuns.includes(run)),
+      };
       const storedQueuedRun =
-        options?.queuedRunId === undefined
-          ? nextQueuedRun(projection)
+        options?.queuedRunId === undefined ||
+        obsoleteRuns.some((run) => run.id === options.queuedRunId)
+          ? nextQueuedRun(eligibleProjection)
           : projection.runs.find(
               (run) => run.id === options.queuedRunId && run.status === "queued",
             );
@@ -3118,7 +3146,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
     disposition: "held" | "released",
     messageId?: MessageId,
-  ) {
+  ): Effect.fn.Return<void, OrchestratorV2Error> {
     const { thread } = yield* getProjectionWithPendingEvents(threadId, events);
     for (const link of thread.pullRequests ?? []) {
       const followup = link.followup;
@@ -3141,6 +3169,22 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         },
         events,
       );
+      if (messageId === undefined && followup.status === "verification_pending") {
+        const pending = yield* getProjectionWithPendingEvents(threadId, events);
+        for (const run of pending.runs.filter(
+          (run) => run.status === "queued" && run.userMessageId === followup.messageId,
+        )) {
+          yield* dispatchQueuedRunCancel(
+            {
+              type: "queued-run.cancel",
+              commandId: command.commandId,
+              threadId,
+              runId: run.id,
+            },
+            events,
+          );
+        }
+      }
     }
   });
 
@@ -3223,6 +3267,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         } else {
           if (!followup || followup.generation !== action.generation)
             return yield* fail("The followup generation changed.");
+          if (
+            action.type !== "acknowledge" &&
+            (followup.status === "released" || followup.status === "acknowledged")
+          ) {
+            if (action.type === "release" && followup.status === "released") return;
+            return yield* fail("The followup generation already has a final disposition.");
+          }
           if (followup.status === "verification_pending") {
             const pendingMessageId = followup.messageId;
             for (const run of projection.runs.filter(
@@ -3318,10 +3369,26 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           ["queued", "preparing", "starting", "running", "waiting"].includes(previousRun.status)
         )
           return;
+        if (followup.attempts >= PULL_REQUEST_FOLLOWUP_MAX_ATTEMPTS) {
+          yield* emitPullRequestFollowup(
+            command,
+            thread,
+            link,
+            {
+              generation: followup.generation,
+              reviewedHead: followup.reviewedHead,
+              intendedBase: followup.intendedBase,
+              status: "held",
+              reason:
+                "Verification attempts exhausted without acknowledgement. Verify manually or explicitly register to resume.",
+            },
+            events,
+          );
+          return;
+        }
         if (
-          followup.attempts >= PULL_REQUEST_FOLLOWUP_MAX_ATTEMPTS ||
           DateTime.toEpochMillis(now) - Date.parse(followup.lastAttemptAt) <
-            PULL_REQUEST_FOLLOWUP_RETRY_MS
+          PULL_REQUEST_FOLLOWUP_RETRY_MS
         )
           return;
       }
@@ -14377,7 +14444,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       commandThreadId(command),
       dispatchWithReceiptEffect(command),
     );
-    // Registration checks ownership across threads, so serialize it through commit.
     if (command.type === "thread.pull-request.followup" && command.action.type === "register") {
       return yield* followupRegistration.withPermit(dispatch);
     }
