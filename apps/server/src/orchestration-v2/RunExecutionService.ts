@@ -1791,6 +1791,9 @@ export const layer: Layer.Layer<
           yield* retireUnstartedRun();
           return;
         }
+        if (Exit.isFailure(shouldStart) && Exit.isSuccess(preparation)) {
+          yield* preparation.value.onNotStarted();
+        }
         const preparedInput = Exit.isSuccess(preparation) ? preparation.value.input : turnInput;
         const startTurn = compact
           ? (input.session.compactThread?.(preparedInput) ??

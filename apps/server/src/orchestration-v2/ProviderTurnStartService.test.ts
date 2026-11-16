@@ -1055,11 +1055,13 @@ effectIt.effect.each([
   "snoozed",
   "paused",
   "before-native-start",
+  "run-ended-during-admission",
+  "attempt-replaced-during-admission",
 ] as const)("rejects a previously admitted followup after it is %s", (disposition) =>
   Effect.gen(function* () {
     const harness = makeLocalCommandHarness({
       text: "Verify landing",
-      ...(disposition === "before-native-start" && {
+      ...((disposition === "before-native-start" || disposition.endsWith("during-admission")) && {
         previousTurn: { runStatus: "completed", turnStatus: "completed" },
       }),
     });
@@ -1120,12 +1122,27 @@ effectIt.effect.each([
         }),
       })),
     });
-    if (disposition === "before-native-start") {
+    if (disposition === "before-native-start" || disposition.endsWith("during-admission")) {
       yield* harness.start;
       const start = harness.startRootRun.mock.calls.at(-1)?.[0];
       expect(start?.shouldStartProviderTurn).toBeDefined();
       expect(yield* start!.shouldStartProviderTurn!()).toBe(true);
       const current = harness.projection();
+      if (disposition.endsWith("during-admission")) {
+        harness.getThreadRecords.mockImplementationOnce(() =>
+          Effect.succeed({
+            ...current,
+            runs: current.runs.map((candidate) => ({
+              ...candidate,
+              ...(disposition === "run-ended-during-admission"
+                ? { status: "failed" as const }
+                : { activeAttemptId: RunAttemptId.make("replacement-attempt") }),
+            })),
+          }),
+        );
+        expect(yield* start!.shouldStartProviderTurn!()).toBe(false);
+        return;
+      }
       harness.setProjection({
         ...current,
         thread: {

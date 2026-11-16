@@ -1245,6 +1245,7 @@ it.effect.each([
   "late-start-guard",
   "stale-start-guard",
   "handoff-start-guard",
+  "handoff-admission-read-failure",
 ] as const)("handles %s before the provider turn starts", (scenario) =>
   Effect.gen(function* () {
     const threadId = ThreadId.make("thread:run-execution-settings-failure");
@@ -1262,7 +1263,9 @@ it.effect.each([
     const providerStarts = yield* Ref.make(0);
     const guardCalls = yield* Ref.make(0);
     const admissionWithdrawn = yield* Ref.make(false);
-    const guardedStart = scenario.endsWith("start-guard");
+    const admissionReadFailure = scenario === "handoff-admission-read-failure";
+    const guardedStart = scenario.endsWith("start-guard") || admissionReadFailure;
+    const restorations = yield* Ref.make(0);
     const refreshes = yield* Ref.make(0);
     const guardedWrites = yield* Ref.make(0);
     const writes = yield* Ref.make<ReadonlyArray<ReadonlyArray<OrchestrationV2DomainEvent>>>([]);
@@ -1351,21 +1354,30 @@ it.effect.each([
               shouldStartProviderTurn: () =>
                 Ref.getAndUpdate(guardCalls, (count) => count + 1).pipe(
                   Effect.flatMap((count) =>
-                    scenario === "handoff-start-guard"
-                      ? Ref.get(admissionWithdrawn).pipe(Effect.map((withdrawn) => !withdrawn))
-                      : Effect.succeed(scenario === "late-start-guard" && count === 0),
+                    admissionReadFailure
+                      ? count === 0
+                        ? Effect.succeed(true)
+                        : Effect.fail(
+                            new ProjectionStore.ProjectionStoreReadError({
+                              threadId,
+                              cause: "Admission unavailable",
+                            }),
+                          )
+                      : scenario === "handoff-start-guard"
+                        ? Ref.get(admissionWithdrawn).pipe(Effect.map((withdrawn) => !withdrawn))
+                        : Effect.succeed(scenario === "late-start-guard" && count === 0),
                   ),
                 ),
             }
           : {}),
-        ...(scenario === "handoff-start-guard"
+        ...(scenario === "handoff-start-guard" || admissionReadFailure
           ? {
               prepareProviderTurn: (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) =>
                 Ref.set(admissionWithdrawn, true).pipe(
                   Effect.as({
                     input: turnInput,
                     onAccepted: Effect.void,
-                    onNotStarted: () => Effect.void,
+                    onNotStarted: () => Ref.update(restorations, (count) => count + 1),
                   }),
                 ),
             }
@@ -1393,6 +1405,7 @@ it.effect.each([
     }).pipe(Effect.provide(layerTest), Effect.exit);
 
     assert.equal(yield* Ref.get(providerStarts), 0);
+    if (admissionReadFailure) assert.equal(yield* Ref.get(restorations), 1);
     const events = (yield* Ref.get(writes)).flat();
     if (scenario === "interruption") {
       assert.isTrue(Exit.isFailure(result));
@@ -1419,11 +1432,17 @@ it.effect.each([
             event.type === "node.updated",
         )
         .map((event) => event.payload.status),
-      guardedStart ? ["cancelled", "cancelled", "cancelled"] : ["failed", "failed", "failed"],
+      guardedStart && !admissionReadFailure
+        ? ["cancelled", "cancelled", "cancelled"]
+        : ["failed", "failed", "failed"],
     );
     const errorItem = events.find(
       (event) => event.type === "turn-item.updated" && event.payload.type === "error",
     );
+    if (admissionReadFailure) {
+      assert.isDefined(errorItem);
+      return;
+    }
     if (guardedStart) {
       assert.isUndefined(errorItem);
       assert.equal(

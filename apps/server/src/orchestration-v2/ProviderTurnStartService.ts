@@ -1682,12 +1682,22 @@ export const layer: Layer.Layer<
             !acceptedAttempts.some((source) => source.nativeThreadId !== undefined)),
         shouldStartProviderTurn: run.userMessageId.startsWith("pr-followup:")
           ? Effect.fn("ProviderTurnStartService.canStartPullRequestFollowup")(function* () {
-              if (!(yield* runControls.shouldStartProviderTurn())) return false;
               const current = yield* projectionStore.getThreadRecords(input.threadId, [
+                "runs",
+                "attempts",
                 "providerThreads",
                 "runtimeRequests",
               ]);
-              return canStartPullRequestFollowup(current, run.userMessageId);
+              const currentRun = current.runs.find((candidate) => candidate.id === run.id);
+              const currentAttempt = current.attempts.find(
+                (candidate) => candidate.id === attempt.id,
+              );
+              return (
+                currentRun?.status === "running" &&
+                currentRun.activeAttemptId === attempt.id &&
+                currentAttempt?.status === "running" &&
+                canStartPullRequestFollowup(current, run.userMessageId)
+              );
             })
           : runControls.shouldStartProviderTurn,
         shouldFinalizeRun: runControls.shouldFinalizeRun,
