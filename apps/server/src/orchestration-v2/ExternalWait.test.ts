@@ -1,12 +1,13 @@
 import { expect, it } from "@effect/vitest";
 import * as DateTime from "effect/DateTime";
 import * as Schema from "effect/Schema";
-import { MessageId, RunId, ThreadId } from "@t3tools/contracts";
+import { MessageId, RunId, ThreadId, TurnItemId } from "@t3tools/contracts";
 import { ExternalWaitRegistry } from "./ExternalWait.ts";
 
 const thread = Schema.decodeSync(ThreadId)("thread");
 const decodeRunId = Schema.decodeSync(RunId);
 const decodeMessageId = Schema.decodeSync(MessageId);
+const decodeTurnItemId = Schema.decodeSync(TurnItemId);
 const run = decodeRunId("run");
 const at = (seconds: number) => DateTime.makeUnsafe(seconds * 1000);
 const dependency = {
@@ -171,4 +172,16 @@ it("requires a new generation after terminal, cancellation, or disposal", () => 
   const next = registry.register({ ...input("checks"), generation: 2 });
   expect(next.created).toBe(true);
   expect(next.record.itemId).not.toBe(item.itemId);
+});
+
+it("rejects item identity collisions during registration and restore", () => {
+  const registry = setup();
+  const item = registry.register({
+    ...input("collision"),
+    itemId: decodeTurnItemId("external-wait:fixed"),
+  }).record;
+  expect(() => registry.register({ ...input("other"), itemId: item.itemId })).toThrow(
+    "already registered",
+  );
+  expect(() => registry.restore([item, item])).toThrow("duplicate external wait item");
 });

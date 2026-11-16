@@ -117,6 +117,9 @@ export class ExternalWaitRegistry {
 
     const itemNumber = ++this.nextItem;
     const itemId = input.itemId ?? decodeTurnItemId(`external-wait:${itemNumber}`);
+    if (this.records.has(itemId)) {
+      throw new Error(`external wait item ${itemId} is already registered`);
+    }
     const record: ExternalWaitRecord = {
       type: "external_wait",
       itemId,
@@ -282,6 +285,9 @@ export class ExternalWaitRegistry {
   restore(records: ReadonlyArray<ExternalWaitRecord>): void {
     this.records.clear();
     for (const record of records) {
+      if (this.records.has(record.itemId)) {
+        throw new Error(`duplicate external wait item ${record.itemId}`);
+      }
       this.records.set(record.itemId, record);
       const number = Number(record.itemId.split(":").at(-1));
       if (Number.isSafeInteger(number)) this.nextItem = Math.max(this.nextItem, number);
