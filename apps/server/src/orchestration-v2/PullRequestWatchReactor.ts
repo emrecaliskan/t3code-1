@@ -1,5 +1,6 @@
 import {
   CommandId,
+  hasPendingPullRequestFollowup,
   MessageId,
   type OrchestrationV2Notification,
   type PullRequestActivity,
@@ -18,6 +19,7 @@ import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Context from "effect/Context";
 import * as SecureRandom from "effect/crypto/SecureRandom";
+import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -527,9 +529,33 @@ export const make = Effect.gen(function* () {
     if (detail.state !== "open") {
       lastReads.delete(group.key);
       return yield* eachTarget(group, (target) =>
-        detail.state === "closed"
-          ? closed(target)
-          : record(target, null).pipe(Effect.tap(() => ended(target, "merged"))),
+        Effect.gen(function* () {
+          const uuid = yield* random.uuidV4();
+          yield* engine.dispatch({
+            type: "thread.pull-request-link.sync",
+            commandId: CommandId.make(`server:pr-watch-terminal:${target.thread.id}:${uuid}`),
+            threadId: target.thread.id,
+            ...identityOf(target.link),
+            snapshot: {
+              state: detail.state,
+              title: detail.title,
+              headBranch: detail.headBranch,
+              baseBranch: detail.baseBranch,
+              isDraft: detail.isDraft,
+              updatedAt: detail.updatedAt,
+              syncedAt: DateTime.formatIso(yield* DateTime.now),
+              mergedAt: detail.mergedAt,
+              closedAt: detail.closedAt,
+              mergeSha: detail.mergeSha ?? null,
+            },
+            stack: target.link.stack,
+          });
+          yield* detail.state === "closed" && !hasPendingPullRequestFollowup(target.link)
+            ? closed(target)
+            : record(target, null).pipe(
+                Effect.tap(() => ended(target, detail.state === "closed" ? "closed" : "merged")),
+              );
+        }),
       );
     }
 
@@ -619,6 +645,18 @@ export const make = Effect.gen(function* () {
       ending,
       ([target, reason]) =>
         record(target, null).pipe(
+          Effect.tap(() =>
+            Effect.gen(function* () {
+              if (reason !== "merged" || target.link.followup === undefined) return;
+              const uuid = yield* random.uuidV4();
+              yield* engine.dispatch({
+                type: "thread.pull-request-followup.reconcile",
+                commandId: CommandId.make(`server:pr-watch-followup:${target.thread.id}:${uuid}`),
+                threadId: target.thread.id,
+                ...identityOf(target.link),
+              });
+            }),
+          ),
           Effect.tap(() => ended(target, reason)),
           Effect.catchCause(
             logFailure("pull request watch stop failed", {

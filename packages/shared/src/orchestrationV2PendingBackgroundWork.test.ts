@@ -420,6 +420,32 @@ describe("derivePendingBackgroundWork kinds", () => {
       expect(backgroundWorkHoldsCompletion(tasks)).toBe(true);
     });
 
+    it.each(["awaiting_terminal", "held", "released"] as const)(
+      "derives %s followup independently of watching",
+      (status) => {
+        const followup =
+          status === "awaiting_terminal"
+            ? { status, generation: 1, reviewedHead: "reviewed", intendedBase: "main" }
+            : {
+                status,
+                generation: 1,
+                reviewedHead: "reviewed",
+                intendedBase: "main",
+                reason: "Human handback",
+              };
+        const tasks = derivePendingBackgroundWork({
+          latestRun: null,
+          providerThreads: [],
+          turnItems: [],
+          pullRequests: [{ ...link(9, { watched: false, state: "merged" }), followup }],
+        });
+        expect(tasks.map((task) => task.description)).toEqual(
+          status === "awaiting_terminal" ? [`Pull request #9 followup ${status}`] : [],
+        );
+        expect(backgroundWorkHoldsCompletion(tasks)).toBe(status === "awaiting_terminal");
+      },
+    );
+
     it("keeps a thread that never ran waiting on its watch", () => {
       expect(
         derivePendingBackgroundWork({

@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 
 import {
   IsoDateTime,
+  MessageId,
   NonNegativeInt,
   PositiveInt,
   ProjectId,
@@ -44,6 +45,7 @@ export const ThreadPullRequestSnapshot = Schema.Struct({
   syncedAt: IsoDateTime,
   closedAt: Schema.optional(Schema.NullOr(Schema.String)),
   mergedAt: Schema.optional(Schema.NullOr(Schema.String)),
+  mergeSha: Schema.optional(Schema.NullOr(TrimmedNonEmptyString)),
   author: Schema.optional(Schema.NullOr(PullRequestActor)),
   additions: Schema.optional(NonNegativeInt),
   deletions: Schema.optional(NonNegativeInt),
@@ -103,6 +105,82 @@ export const ThreadPullRequestWatch = Schema.Struct({
 });
 export type ThreadPullRequestWatch = typeof ThreadPullRequestWatch.Type;
 
+export const PullRequestFollowupTerminal = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("merged"),
+    mergeSha: TrimmedNonEmptyString,
+    base: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({ type: Schema.Literal("closed"), base: TrimmedNonEmptyString }),
+]);
+export type PullRequestFollowupTerminal = typeof PullRequestFollowupTerminal.Type;
+
+const FollowupIdentity = {
+  generation: PositiveInt,
+  reviewedHead: TrimmedNonEmptyString,
+  intendedBase: TrimmedNonEmptyString,
+};
+
+export const ThreadPullRequestFollowup = Schema.Union([
+  Schema.Struct({ ...FollowupIdentity, status: Schema.Literal("awaiting_terminal") }),
+  Schema.Struct({
+    ...FollowupIdentity,
+    status: Schema.Literal("verification_pending"),
+    terminal: PullRequestFollowupTerminal,
+    messageId: MessageId,
+    attempts: PositiveInt,
+    lastAttemptAt: IsoDateTime,
+  }),
+  Schema.Struct({
+    ...FollowupIdentity,
+    status: Schema.Literal("held"),
+    reason: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    ...FollowupIdentity,
+    status: Schema.Literal("released"),
+    reason: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    ...FollowupIdentity,
+    status: Schema.Literal("acknowledged"),
+    terminal: PullRequestFollowupTerminal,
+    evidence: TrimmedNonEmptyString,
+    acknowledgedAt: IsoDateTime,
+  }),
+]);
+export type ThreadPullRequestFollowup = typeof ThreadPullRequestFollowup.Type;
+
+export const PullRequestFollowupAction = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("register"),
+    reviewedHead: TrimmedNonEmptyString,
+    intendedBase: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    type: Schema.Literals(["hold", "release"]),
+    generation: PositiveInt,
+    reason: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("acknowledge"),
+    generation: PositiveInt,
+    result: PullRequestFollowupTerminal,
+    evidence: TrimmedNonEmptyString,
+  }),
+]);
+export type PullRequestFollowupAction = typeof PullRequestFollowupAction.Type;
+
+export function hasPendingPullRequestFollowup(link: {
+  readonly followup?: ThreadPullRequestFollowup | undefined;
+}): boolean {
+  return (
+    link.followup !== undefined &&
+    link.followup.status !== "acknowledged" &&
+    link.followup.status !== "released"
+  );
+}
+
 export const ThreadPullRequestLink = Schema.Struct({
   ...ThreadPullRequestKey.fields,
   url: TrimmedNonEmptyString,
@@ -113,6 +191,7 @@ export const ThreadPullRequestLink = Schema.Struct({
   snapshot: Schema.NullOr(ThreadPullRequestSnapshot),
   stack: Schema.NullOr(ThreadPullRequestStack),
   watch: Schema.optional(ThreadPullRequestWatch),
+  followup: Schema.optional(ThreadPullRequestFollowup),
   /** Resume from the ended watch to avoid duplicate notifications. */
   endedWatch: Schema.optional(ThreadPullRequestWatch),
 });

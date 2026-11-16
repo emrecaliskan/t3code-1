@@ -67,6 +67,7 @@ const row = (fields: Record<string, unknown>) => ({
   createdAt: "2026-07-01T00:00:00Z",
   updatedAt: "2026-07-02T00:00:00Z",
   mergedAt: null,
+  mergeCommit: null,
   repository: { nameWithOwner: "pingdotgg/t3code" },
   reviewRequests: { nodes: [] },
   labels: { nodes: [] },
@@ -359,6 +360,7 @@ describe("pull request detail decoding", () => {
             createdAt: "2026-07-01T00:00:00Z",
             updatedAt: "2026-07-05T00:00:00Z",
             mergedAt: null,
+            mergeCommit: null,
             closedAt: null,
             headRefName: "feat/detail",
             baseRefName: "main",
@@ -399,6 +401,18 @@ describe("pull request detail decoding", () => {
     rollup: ReadonlyArray<Record<string, unknown>>,
     pullRequest?: Record<string, unknown>,
   ) => expectSuccess(decodePullRequestCoreJson(coreJson(rollup, pullRequest)));
+
+  it("keeps the actual merge commit separate from the reviewed branch head", () => {
+    const detail = detailOf([], {
+      state: "MERGED",
+      mergedAt: "2026-11-16T12:00:00Z",
+      headRefOid: "reviewed-head",
+      mergeCommit: { oid: "actual-merge" },
+    });
+    expect(detail.mergeSha).toBe("actual-merge");
+    expect(detail.headSha).toBe("reviewed-head");
+    expect(detailOf([], { state: "MERGED", mergeCommit: null }).mergeSha).toBeNull();
+  });
 
   it.each([
     [{}, true],

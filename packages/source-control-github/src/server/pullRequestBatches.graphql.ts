@@ -3,6 +3,13 @@ import { GraphQL, GraphQLGroup } from "effect/graphql"
 import * as Schema from "effect/Schema"
 import * as Shared from "../../schema/github.graphql.ts"
 
+/** Represents a Git commit. */
+export const MergeCommitCommit = Schema.Struct({
+  /** The Git object ID */
+  oid: Shared.GitObjectID
+})
+export interface MergeCommitCommit extends Schema.Struct.Type<typeof MergeCommitCommit.fields> {}
+
 /** A user is an individual's account on GitHub that owns repositories and can make new content. */
 export const User = Schema.Struct({
   __typename: Schema.Literal("User"),
@@ -121,6 +128,8 @@ export const PullRequestSummaryRepositoryPullRequestPullRequest = Schema.Struct(
   updatedAt: Shared.DateTime,
   /** The date and time that the pull request was merged. */
   mergedAt: Schema.NullOr(Shared.DateTime),
+  /** The commit that was created when this pull request was merged. */
+  mergeCommit: Schema.NullOr(MergeCommitCommit),
   /** Identifies the date and time when the object was closed. */
   closedAt: Schema.NullOr(Shared.DateTime),
   /** Identifies the name of the head Ref associated with the pull request, even if the ref has been deleted. */
@@ -160,7 +169,7 @@ export const PullRequestSummary = GraphQL.query("PullRequestSummary", {
       { name: "stacks", body: "Boolean!" }
     ],
     selections: [
-      { name: "repository", body: ["(owner:$", "owner", " name:$", "name", "){pullRequest(number:$", "number", "){number title url state isDraft mergeable reviewDecision additions deletions changedFiles updatedAt mergedAt closedAt headRefName baseRefName author{__typename login avatarUrl...on User{name}}latestReviews(first:20){nodes{state author{__typename login}}}commits(last:1){nodes{commit{statusCheckRollup{state}}}}stack@include(if:$", "stacks", "){number size baseRefName}stackEntry@include(if:$", "stacks", "){position}}}"] }
+      { name: "repository", body: ["(owner:$", "owner", " name:$", "name", "){pullRequest(number:$", "number", "){number title url state isDraft mergeable reviewDecision additions deletions changedFiles updatedAt mergedAt mergeCommit{oid}closedAt headRefName baseRefName author{__typename login avatarUrl...on User{name}}latestReviews(first:20){nodes{state author{__typename login}}}commits(last:1){nodes{commit{statusCheckRollup{state}}}}stack@include(if:$", "stacks", "){number size baseRefName}stackEntry@include(if:$", "stacks", "){position}}}"] }
     ],
     fragments: []
   },

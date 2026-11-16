@@ -5,13 +5,16 @@ import {
   type SourceControlProviderKind,
   type ThreadId,
   type ThreadPullRequestLink,
+  type PullRequestFollowupAction,
 } from "@t3tools/contracts";
 import { canonicalizeGitCafePullRequestUrl } from "@t3tools/source-control-definitions/registry";
 import * as Cause from "effect/Cause";
 import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Option from "effect/Option";
 
+import * as ThreadManagementService from "../../../orchestration-v2/ThreadManagementService.ts";
 import * as Orchestrator from "../../../orchestration-v2/Orchestrator.ts";
 import * as ProjectService from "../../../project/ProjectService.ts";
 import * as PullRequestReviewGuideService from "../../../pullRequest/PullRequestReviewGuideService.ts";
@@ -40,6 +43,7 @@ import {
   PullRequestNotOpenError,
   type PullRequestTargetInput,
   PullRequestWatchFailedError,
+  PullRequestFollowupFailedError,
   PullRequestWatchFromSubagentError,
   PullRequestThreadRequiredError,
   PullRequestGuideFailedError,
@@ -48,6 +52,8 @@ import {
   type ThreadPullRequestEntry,
   CHILD_PULL_REQUEST_REPORT_NEXT,
 } from "./tools.ts";
+
+const isDispatchError = Schema.is(Orchestrator.OrchestratorDispatchError);
 
 interface ResolvedTarget {
   readonly host: string;
@@ -137,6 +143,8 @@ function entryOf(
     url: link.url,
     source: link.source,
     watching: link.watch !== undefined,
+    ...(link.followup && { followup: link.followup }),
+    mergeSha: link.snapshot?.mergeSha ?? null,
     state: link.snapshot?.state ?? null,
     title: link.snapshot?.title ?? null,
     headBranch: link.snapshot?.headBranch ?? null,
@@ -197,6 +205,7 @@ function projectForPullRequest(
 
 const make = Effect.gen(function* () {
   const engine = yield* Orchestrator.OrchestratorV2;
+  const management = yield* ThreadManagementService.ThreadManagementService;
   const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
 
   const projects = yield* ProjectService.ProjectService;
@@ -299,6 +308,46 @@ const make = Effect.gen(function* () {
       watching: watchedLink(after)?.watch !== undefined,
       wasWatching: before?.watch !== undefined,
     };
+  });
+
+  const changeFollowup = Effect.fn("PullRequestsToolkit.changeFollowup")(function* (
+    input: PullRequestTargetInput,
+    action: PullRequestFollowupAction,
+  ) {
+    const scope = yield* McpInvocationContext.requireMcpCapability("pull-requests");
+    if (scope.thread !== undefined) {
+      const caller = yield* requireThread(PullRequestWatchFailedError, scope.thread.threadId);
+      if (caller.lineage.relationshipToParent === "subagent" || caller.delegatedFrom !== undefined)
+        return yield* new PullRequestWatchFromSubagentError();
+    }
+    const thread = yield* requireThread(PullRequestWatchFailedError, input.threadId);
+    const target = yield* resolveTarget(
+      input,
+      yield* projectOf(thread, PullRequestWatchFailedError),
+    );
+    const link = yield* management
+      .updatePullRequestFollowup({
+        type: "thread.pull-request.followup",
+        commandId: yield* commandId("mcp-pr-followup", thread.id),
+        threadId: thread.id,
+        host: target.host,
+        repository: target.repository,
+        number: target.number,
+        action,
+      })
+      .pipe(
+        Effect.mapError(
+          (cause) =>
+            new PullRequestFollowupFailedError({
+              cause,
+              reason:
+                isDispatchError(cause) && typeof cause.cause === "string"
+                  ? cause.cause
+                  : "Could not update pull request followup.",
+            }),
+        ),
+      );
+    return { ...(link?.followup && { followup: link.followup }) };
   });
 
   const locateAll = Effect.fn("PullRequestsToolkit.locateAll")(function* (
@@ -519,6 +568,31 @@ const make = Effect.gen(function* () {
       requireThread(PullRequestListFailedError, input.threadId).pipe(
         Effect.map(listThreadPullRequests),
       ),
+    ),
+    register_pull_request_followup: writesThread((input) =>
+      changeFollowup(input, {
+        type: "register",
+        reviewedHead: input.reviewedHead,
+        intendedBase: input.intendedBase,
+      }),
+    ),
+    hold_pull_request_followup: writesThread((input) =>
+      changeFollowup(input, { type: "hold", generation: input.generation, reason: input.reason }),
+    ),
+    release_pull_request_followup: writesThread((input) =>
+      changeFollowup(input, {
+        type: "release",
+        generation: input.generation,
+        reason: input.reason,
+      }),
+    ),
+    acknowledge_pull_request_followup: writesThread((input) =>
+      changeFollowup(input, {
+        type: "acknowledge",
+        generation: input.generation,
+        result: input.result,
+        evidence: input.evidence,
+      }),
     ),
     watch_pull_request: writesThread((input) => setWatching(input, true)),
     unwatch_pull_request: writesThread((input) => setWatching(input, false)),

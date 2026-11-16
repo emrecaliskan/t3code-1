@@ -15,6 +15,7 @@ import {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
+import { canStartPullRequestFollowup } from "./pullRequestFollowup.ts";
 import * as Context from "effect/Context";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -300,41 +301,6 @@ export const layer: Layer.Layer<
       };
     };
 
-    const makeDeliverySession = (
-      session: ProviderAdapter.ProviderAdapterV2SessionRuntime,
-      startWithHandoffs: (
-        input: Parameters<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>[0],
-        compact?: boolean,
-      ) => ReturnType<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>,
-    ) => {
-      let deliver: typeof startWithHandoffs | undefined = startWithHandoffs;
-      const start = (
-        input: Parameters<ProviderAdapter.ProviderAdapterV2SessionRuntime["startTurn"]>[0],
-        compact = false,
-      ) =>
-        Effect.suspend(() => {
-          if (deliver !== undefined) return deliver(input, compact);
-          return compact && session.compactThread !== undefined
-            ? session.compactThread(input)
-            : session.startTurn(input);
-        }).pipe(
-          Effect.ensuring(
-            Effect.sync(() => {
-              deliver = undefined;
-            }),
-          ),
-        );
-      return {
-        ...session,
-        startTurn: (input: Parameters<typeof session.startTurn>[0]) => start(input),
-        ...(session.compactThread === undefined
-          ? {}
-          : {
-              compactThread: (input: Parameters<typeof session.startTurn>[0]) => start(input, true),
-            }),
-      };
-    };
-
     const start = Effect.fn("orchestrationV2.providerTurnStart.start")(function* (input: {
       readonly threadId: ThreadId;
       readonly runId: RunId;
@@ -348,6 +314,22 @@ export const layer: Layer.Layer<
       }
       if (run.status !== "starting") {
         return;
+      }
+      const requests = run.userMessageId.startsWith("pr-followup:")
+        ? (yield* projectionStore.getThreadRecords(input.threadId, ["runtimeRequests"]))
+            .runtimeRequests
+        : [];
+      if (
+        run.userMessageId.startsWith("pr-followup:") &&
+        !canStartPullRequestFollowup(
+          { ...projection, runtimeRequests: requests },
+          run.userMessageId,
+        )
+      ) {
+        return yield* new ProviderTurnStartError({
+          runId,
+          cause: "Pull request followup admission was withdrawn.",
+        });
       }
       const rootNode = projection.nodes.find((candidate) => candidate.id === run.rootNodeId);
       const attempt = projection.attempts.find((candidate) => candidate.id === run.activeAttemptId);
@@ -1574,7 +1556,7 @@ export const layer: Layer.Layer<
           ],
         });
       });
-      const startWithHandoffs = Effect.fn("ProviderTurnStartService.startWithHandoffs")(
+      const prepareWithHandoffs = Effect.fn("ProviderTurnStartService.prepareWithHandoffs")(
         function* (turnInput: Parameters<typeof session.startTurn>[0], compact = false) {
           const delivery = yield* deliverContextHandoffs({
             handoffs: [...effectiveHandoffs, ...retryHandoff],
@@ -1593,8 +1575,6 @@ export const layer: Layer.Layer<
                 }),
             persist: persistHandoff,
           });
-          if (!(yield* isCurrentAttemptInStatus("running"))) return;
-          const start = compact ? session.compactThread! : session.startTurn;
           // Like history, the side chat context waits for a turn that sends a prompt.
           const sideChatContext =
             sideChatHandoff === undefined || compact || goalCommand
@@ -1604,29 +1584,26 @@ export const layer: Layer.Layer<
             .filter((part) => part !== "")
             .join("\n\n");
           const { restartContinuationOfRunId: _resumedRunId, ...promptedInput } = turnInput;
-          yield* start({
+          const preparedInput = {
             ...(noteContinuation ? promptedInput : turnInput),
             message: {
               ...turnInput.message,
               text: goalCommand ? userText : withInlineContext(context, userText),
             },
-          }).pipe(
-            // Clear pending handoff markers for refused prompts so the next turn retains the native session.
-            Effect.tapError((error) =>
-              refusedBeforePrompt(error)
-                ? delivery.unsent.pipe(
-                    Effect.catchCause(() =>
-                      Effect.logWarning("Failed to restore unsent context handoffs", {
-                        runId: run.id,
-                      }),
-                    ),
-                  )
-                : Effect.void,
-            ),
-          );
+          };
+          const onNotStarted = (error?: ProviderAdapter.ProviderAdapterTurnStartError) =>
+            error === undefined || refusedBeforePrompt(error)
+              ? delivery.unsent.pipe(
+                  Effect.catchCause(() =>
+                    Effect.logWarning("Failed to restore unsent context handoffs", {
+                      runId: run.id,
+                    }),
+                  ),
+                )
+              : Effect.void;
           // After provider acceptance, failed delivery bookkeeping must not stop live ingestion.
           const nativeThreadId = runningProviderThread.nativeThreadRef?.nativeId;
-          yield* Effect.forEach(
+          const onAccepted = Effect.forEach(
             [
               delivery.delivered,
               ...(sideChatContext === "" || sideChatHandoff === undefined || nativeThreadId == null
@@ -1650,6 +1627,7 @@ export const layer: Layer.Layer<
               ),
             { discard: true },
           );
+          return { input: preparedInput, onAccepted, onNotStarted };
         },
         Effect.mapError((cause) =>
           cause._tag === "ProviderAdapterTurnStartError"
@@ -1663,19 +1641,20 @@ export const layer: Layer.Layer<
               }),
         ),
       );
-      const deliverySession =
+      const prepareProviderTurn =
         effectiveHandoffs.length === 0 &&
         retryHandoff.length === 0 &&
         sideChatHandoff === undefined &&
         restartNote === "" &&
         !noteContinuation
-          ? session
-          : makeDeliverySession(session, startWithHandoffs);
+          ? undefined
+          : prepareWithHandoffs;
       return runExecution.startRootRun({
         commandId: CommandId.make(`command:effect:provider-turn.start:${run.id}`),
         appThread: projection.thread,
         providerSessionId,
-        session: deliverySession,
+        session,
+        ...(prepareProviderTurn === undefined ? {} : { prepareProviderTurn }),
         run: runningRun,
         rootNode: runningRootNode,
         checkpointScope,
@@ -1701,7 +1680,26 @@ export const layer: Layer.Layer<
           (legacyInputRunIds.size > 0 &&
             sameNativeThread &&
             !acceptedAttempts.some((source) => source.nativeThreadId !== undefined)),
-        shouldStartProviderTurn: runControls.shouldStartProviderTurn,
+        shouldStartProviderTurn: run.userMessageId.startsWith("pr-followup:")
+          ? Effect.fn("ProviderTurnStartService.canStartPullRequestFollowup")(function* () {
+              const current = yield* projectionStore.getThreadRecords(input.threadId, [
+                "runs",
+                "attempts",
+                "providerThreads",
+                "runtimeRequests",
+              ]);
+              const currentRun = current.runs.find((candidate) => candidate.id === run.id);
+              const currentAttempt = current.attempts.find(
+                (candidate) => candidate.id === attempt.id,
+              );
+              return (
+                currentRun?.status === "running" &&
+                currentRun.activeAttemptId === attempt.id &&
+                currentAttempt?.status === "running" &&
+                canStartPullRequestFollowup(current, run.userMessageId)
+              );
+            })
+          : runControls.shouldStartProviderTurn,
         shouldFinalizeRun: runControls.shouldFinalizeRun,
         hasUnpairedRunInterruptRequest: runControls.hasUnpairedRunInterruptRequest,
         loadRunInterruptReason: runControls.loadRunInterruptReason,

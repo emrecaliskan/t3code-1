@@ -57,6 +57,7 @@ export const ForgejoPullRequest = Schema.Struct({
   updated_at: Schema.String,
   closed_at: Schema.NullOr(Schema.String),
   merged_at: Schema.NullOr(Schema.String),
+  merge_commit_sha: Schema.optional(Schema.NullOr(Schema.String)),
   additions: Schema.optional(Schema.NullOr(Schema.Int)),
   deletions: Schema.optional(Schema.NullOr(Schema.Int)),
   changed_files: Schema.optional(Schema.NullOr(Schema.Int)),
@@ -143,6 +144,7 @@ export function forgejoChangeRequest(pr: typeof ForgejoPullRequest.Type) {
     updatedAt: toIsoUtc(pr.updated_at),
     closedAt: pr.closed_at === null ? null : toIsoUtc(pr.closed_at),
     mergedAt: pr.merged_at === null ? null : toIsoUtc(pr.merged_at),
+    mergeSha: pr.merge_commit_sha ?? null,
     reviewRequestLogins: (pr.requested_reviewers ?? []).map((user) => user.login),
     labels: (pr.labels ?? []).map((label) => ({ name: label.name, color: label.color ?? null })),
   } satisfies ProviderChangeRequest;

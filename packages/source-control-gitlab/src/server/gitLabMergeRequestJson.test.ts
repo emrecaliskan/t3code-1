@@ -95,6 +95,24 @@ describe("decodeMergeRequestListJson", () => {
     );
 
     expect(batch.items[0]?.state).toBe("merged");
+    for (const [merge_commit_sha, squash_commit_sha, expected] of [
+      ["actual-merge", "squash", "actual-merge"],
+      [null, "squash", "squash"],
+      [null, null, null],
+    ]) {
+      const detail = expectSuccess(
+        decodeMergeRequestDetailJson(
+          detailJson({
+            state: "merged",
+            sha: "reviewed-head",
+            merge_commit_sha,
+            squash_commit_sha,
+          }),
+        ),
+      );
+      expect(detail.mergeSha).toBe(expected);
+      expect(detail.headSha).toBe("reviewed-head");
+    }
   });
 
   it("reads the legacy draft flag", () => {

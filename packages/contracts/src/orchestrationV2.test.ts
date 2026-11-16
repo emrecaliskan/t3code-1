@@ -6,6 +6,7 @@ import { NodeId, RunAttemptId, TrimmedNonEmptyString } from "./index.ts";
 import {
   latestProviderTurnForAttempt,
   OrchestrationV2ProviderCapabilities,
+  OrchestrationV2ExternalWaitRecord,
   OrchestrationV2ProviderThread,
   OrchestrationV2ProviderThreadJson,
   OrchestrationV2RpcSchemas,
@@ -623,6 +624,62 @@ describe("background work kinds from older or newer servers", () => {
         ...encodeOrchestrationV2ProviderThreadJson(providerThread),
         pendingBackgroundTasks: [{ taskId: "", kind: "command" }],
       }),
+    ).toThrow();
+  });
+});
+
+describe("external wait state contract", () => {
+  const decodeRecord = Schema.decodeUnknownSync(OrchestrationV2ExternalWaitRecord);
+  const base = {
+    type: "external_wait",
+    itemId: "external-wait:1",
+    ownerThreadId: "thread-1",
+    ownerRunId: "run-1",
+    callerKey: "checks",
+    generation: 1,
+    dependency: {
+      host: "github.com",
+      repository: "acme/app",
+      runId: "42",
+      attempt: 1,
+      expectedHeadSha: "abc",
+    },
+    deadlineAt: now,
+    reservedMessageId: "external-wait-message:1",
+    queuedRunId: "external-wait-run:1",
+    delivery: { kind: "undelivered" },
+  };
+
+  it("accepts each discriminated state and delivery", () => {
+    for (const state of [
+      { kind: "pending", nextDueAt: now },
+      { kind: "held", reason: "quota" },
+      { kind: "terminal", result: "remote_success", observedAt: now },
+      { kind: "cancelled", cancelledAt: now },
+      { kind: "disposed", disposedAt: now, prior: "pending" },
+    ] as const) {
+      for (const delivery of [
+        { kind: "undelivered" },
+        { kind: "queueing", attempt: 1 },
+        { kind: "queued", attempt: 1, queuedAt: now },
+        { kind: "accepted", acceptedAt: now },
+        { kind: "failed", attempt: 1, reason: "queue unavailable" },
+        { kind: "held", reason: "retry_limit" },
+        { kind: "disposed" },
+      ] as const) {
+        expect(decodeRecord({ ...base, state, delivery })).toMatchObject({ state, delivery });
+      }
+    }
+  });
+
+  it("rejects flattened, unknown, and mismatched states", () => {
+    expect(() => decodeRecord({ ...base, result: "remote_success" })).toThrow();
+    expect(() => decodeRecord({ ...base, state: { kind: "waiting", nextDueAt: now } })).toThrow();
+    expect(() =>
+      decodeRecord({ ...base, state: { kind: "terminal", result: "later", observedAt: now } }),
+    ).toThrow();
+    expect(() =>
+      decodeRecord({ ...base, delivery: { kind: "queued", attempt: 0, queuedAt: now } }),
     ).toThrow();
   });
 });

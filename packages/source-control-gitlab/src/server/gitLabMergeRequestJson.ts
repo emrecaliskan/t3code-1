@@ -77,6 +77,8 @@ const RawMergeRequestSchema = Schema.Struct({
   created_at: Schema.String,
   updated_at: Schema.String,
   merged_at: Schema.optional(Schema.NullOr(Schema.String)),
+  merge_commit_sha: Schema.optional(Schema.NullOr(Schema.String)),
+  squash_commit_sha: Schema.optional(Schema.NullOr(Schema.String)),
   closed_at: Schema.optional(Schema.NullOr(Schema.String)),
   reviewers: Schema.optional(Schema.NullOr(Schema.Array(RawUserSchema))),
   labels: Schema.optional(Schema.NullOr(Schema.Array(Schema.String))),
@@ -211,6 +213,7 @@ export interface GitLabMergeRequestDetail extends GitLabMergeRequestListItem {
   readonly body: string;
   readonly changedFiles: number;
   readonly mergedAt: string | null;
+  readonly mergeSha?: string | null | undefined;
   readonly closedAt: string | null;
   readonly reviewers: ReadonlyArray<PullRequestActor>;
   readonly checks: ReadonlyArray<PullRequestCheck>;
@@ -514,6 +517,7 @@ function toDetail(raw: Schema.Schema.Type<typeof RawMergeRequestSchema>): GitLab
     body: raw.description ?? "",
     changedFiles: toChangedFiles(raw.changes_count),
     mergedAt: trimmed(raw.merged_at),
+    mergeSha: trimmed(raw.merge_commit_sha) ?? trimmed(raw.squash_commit_sha),
     closedAt: trimmed(raw.closed_at),
     reviewers: (raw.reviewers ?? []).flatMap((reviewer) => {
       const actor = toActor(reviewer);

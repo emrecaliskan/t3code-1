@@ -246,6 +246,27 @@ describe("resolveAutoSettlementAt", () => {
       autoSettleKeepPullRequests: false,
     };
     expect(ThreadSettlementService.resolveAutoSettlementAt(input)).toEqual(at(-4 * DAY_MS));
+    for (const status of ["awaiting_terminal", "held"] as const) {
+      const pending = {
+        ...input.thread,
+        pullRequests: [
+          {
+            ...input.thread.pullRequests![0]!,
+            followup: {
+              generation: 1,
+              reviewedHead: "reviewed",
+              intendedBase: "main",
+              status,
+              reason: "Operator decision",
+            },
+          },
+        ],
+      };
+      expect(ThreadSettlementService.isAutoSettlementCandidate(pending, NOW_MS)).toBe(false);
+      expect(
+        ThreadSettlementService.resolveAutoSettlementAt({ ...input, thread: pending }),
+      ).toBeNull();
+    }
     expect(
       ThreadSettlementService.resolveAutoSettlementAt({
         ...input,

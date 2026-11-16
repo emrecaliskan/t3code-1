@@ -58,6 +58,9 @@ const RawPullRequestSchema = Schema.Struct({
   draft: Schema.optional(Schema.Boolean),
   author: Schema.optional(Schema.NullOr(RawUserSchema)),
   source: RawBranchSchema,
+  merge_commit: Schema.optional(
+    Schema.NullOr(Schema.Struct({ hash: Schema.optional(Schema.NullOr(Schema.String)) })),
+  ),
   destination: RawBranchSchema,
   created_on: Schema.String,
   updated_on: Schema.String,
@@ -161,6 +164,7 @@ export interface BitbucketPullRequest {
   readonly author: PullRequestActor | null;
   readonly headBranch: string;
   readonly headSha: string | null;
+  readonly mergeSha?: string | null | undefined;
   readonly headRepositoryNameWithOwner: string | null;
   readonly baseBranch: string;
   readonly state: PullRequestState;
@@ -252,6 +256,7 @@ function toPullRequest(raw: Schema.Schema.Type<typeof RawPullRequestSchema>): Bi
     author: toActor(raw.author),
     headBranch: raw.source.branch.name,
     headSha: trimmed(raw.source.commit?.hash),
+    mergeSha: trimmed(raw.merge_commit?.hash),
     headRepositoryNameWithOwner: raw.source.repository?.full_name ?? null,
     baseBranch: raw.destination.branch.name,
     state: toState(raw),

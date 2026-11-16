@@ -97,6 +97,7 @@ export interface ProviderChangeRequest {
   readonly createdAt: string;
   readonly closedAt?: string | null;
   readonly mergedAt?: string | null;
+  readonly mergeSha?: string | null | undefined;
   readonly updatedAt: string;
   readonly reviewRequestLogins: ReadonlyArray<string>;
   readonly labels: ReadonlyArray<PullRequestLabel>;
@@ -114,6 +115,7 @@ export interface ProviderChangeRequestSummary {
   readonly isDraft?: boolean;
   readonly closedAt?: string | null;
   readonly mergedAt?: string | null;
+  readonly mergeSha?: string | null | undefined;
   readonly updatedAt: string;
   readonly author?: PullRequestActor | null | undefined;
   readonly additions?: number | undefined;

@@ -564,6 +564,8 @@ function itemIcon(item: OrchestrationV2TurnItem): ThreadFeedActivity["icon"] {
       return "lock";
     case "link_request":
       return "globe";
+    case "external_wait":
+      return "globe";
   }
 }
 
@@ -625,6 +627,8 @@ function itemSummary(
       return item.label;
     case "link_request":
       return `Link ${item.label ?? item.url ?? "an environment"}`;
+    case "external_wait":
+      return `Actions wait (${item.delivery.kind})`;
     case "dynamic_tool": {
       const classified = classifyToolActivity({
         itemType: "dynamic_tool_call",
@@ -691,6 +695,8 @@ function itemPreview(item: OrchestrationV2TurnItem): string | null {
       return null;
     case "notification":
       return item.detail ?? null;
+    case "external_wait":
+      return item.state.kind === "terminal" ? item.state.result : item.dependency.repository;
     case "proposed_plan":
       return item.markdown || null;
     case "todo_list":

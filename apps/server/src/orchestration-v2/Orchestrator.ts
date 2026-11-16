@@ -1,3 +1,4 @@
+import { hasPendingPullRequestFollowup, type ThreadPullRequestFollowup } from "@t3tools/contracts";
 import type {
   GuestShareId,
   OrchestrationV2SearchThreadInput,
@@ -16,6 +17,7 @@ import {
   normalizeThreadPullRequestKey,
   visibleThreadPullRequests,
   threadPullRequestKeysEqual,
+  threadPullRequestKeyOf,
   legacyThreadPullRequestKey,
 } from "../sourceControl/threadPullRequests.ts";
 import {
@@ -95,8 +97,14 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 
+import {
+  canStartPullRequestFollowup,
+  PULL_REQUEST_FOLLOWUP_RETRY_MS,
+  PULL_REQUEST_FOLLOWUP_MAX_ATTEMPTS,
+} from "./pullRequestFollowup.ts";
 import * as ProjectStore from "./ProjectStore.ts";
 import {
   isCheckpointRestoreIsolated,
@@ -573,6 +581,8 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.visit":
     case "thread.mark-unread":
     case "thread.metadata.update":
+    case "thread.pull-request.followup":
+    case "thread.pull-request-followup.reconcile":
     case "thread.pull-request.link":
     case "thread.pull-request.unlink":
     case "thread.pull-request-link.sync":
@@ -619,6 +629,7 @@ function commandThreadId(command: OrchestrationV2ServerCommand): ThreadId {
     case "thread.created.record":
       return command.parentThreadId;
     case "secret_request.record":
+    case "external_wait.record":
     case "link_request.record":
       return command.threadId;
     case "thread.fork":
@@ -750,6 +761,7 @@ function legacyPullRequestLink(
         repositoryWebUrl: existing.repositoryWebUrl,
       }),
       ...(existing?.endedWatch && { endedWatch: existing.endedWatch }),
+      ...(existing?.followup && { followup: existing.followup }),
     },
     existing?.watch,
   );
@@ -1726,9 +1738,37 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         return;
       }
 
+      const obsoleteRuns = projection.runs.filter(
+        (run) =>
+          run.status === "queued" &&
+          run.userMessageId.startsWith("pr-followup:") &&
+          !projection.thread.pullRequests?.some(
+            (link) =>
+              link.followup?.status === "verification_pending" &&
+              link.followup.messageId === run.userMessageId,
+          ),
+      );
+      for (const run of obsoleteRuns) {
+        const events = yield* Ref.make<Array<OrchestrationV2DomainEvent>>([]);
+        yield* dispatchQueuedRunCancel(
+          {
+            type: "queued-run.cancel",
+            commandId: CommandId.make(`server:pr-followup-retire:${run.id}`),
+            threadId,
+            runId: run.id,
+          },
+          events,
+        );
+        yield* writeSystemEvents(yield* Ref.get(events));
+      }
+      const eligibleProjection = {
+        ...projection,
+        runs: projection.runs.filter((run) => !obsoleteRuns.includes(run)),
+      };
       const storedQueuedRun =
-        options?.queuedRunId === undefined
-          ? nextQueuedRun(projection)
+        options?.queuedRunId === undefined ||
+        obsoleteRuns.some((run) => run.id === options.queuedRunId)
+          ? nextQueuedRun(eligibleProjection)
           : projection.runs.find(
               (run) => run.id === options.queuedRunId && run.status === "queued",
             );
@@ -1738,6 +1778,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const queuedMessage = projection.messages.find(
         (candidate) => candidate.id === storedQueuedRun.userMessageId,
       );
+      if (
+        storedQueuedRun.userMessageId.startsWith("pr-followup:") &&
+        !canStartPullRequestFollowup(projection, storedQueuedRun.userMessageId)
+      )
+        return;
       const modelSelection = queuedRunModelSelection(projection, storedQueuedRun);
       const queuedRun = {
         ...storedQueuedRun,
@@ -3077,6 +3122,319 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     });
   });
 
+  const emitPullRequestFollowup = Effect.fn("Orchestrator.emitPullRequestFollowup")(function* (
+    command: OrchestrationV2ServerCommand,
+    thread: OrchestrationV2AppThread,
+    link: ThreadPullRequestLink,
+    followup: ThreadPullRequestFollowup,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+  ) {
+    yield* emit(
+      events,
+      command,
+    )({
+      type: "thread.pull-request-link-updated",
+      threadId: thread.id,
+      providerInstanceId: thread.providerInstanceId,
+      occurredAt: yield* DateTime.now,
+      payload: { ...link, followup },
+    });
+  });
+
+  const holdPullRequestFollowups = Effect.fn("Orchestrator.holdPullRequestFollowups")(function* (
+    command: OrchestrationV2ServerCommand,
+    threadId: ThreadId,
+    events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    disposition: "held" | "released",
+    messageId?: MessageId,
+  ): Effect.fn.Return<void, OrchestratorV2Error> {
+    const { thread } = yield* getProjectionWithPendingEvents(threadId, events);
+    for (const link of thread.pullRequests ?? []) {
+      const followup = link.followup;
+      if (!followup || !hasPendingPullRequestFollowup(link)) continue;
+      if (
+        messageId !== undefined &&
+        (followup.status !== "verification_pending" || followup.messageId !== messageId)
+      )
+        continue;
+      yield* emitPullRequestFollowup(
+        command,
+        thread,
+        link,
+        {
+          generation: followup.generation,
+          reviewedHead: followup.reviewedHead,
+          intendedBase: followup.intendedBase,
+          status: disposition,
+          reason: `Explicit ${command.type}`,
+        },
+        events,
+      );
+      if (messageId === undefined && followup.status === "verification_pending") {
+        const pending = yield* getProjectionWithPendingEvents(threadId, events);
+        for (const run of pending.runs.filter(
+          (run) => run.status === "queued" && run.userMessageId === followup.messageId,
+        )) {
+          yield* dispatchQueuedRunCancel(
+            {
+              type: "queued-run.cancel",
+              commandId: command.commandId,
+              threadId,
+              runId: run.id,
+            },
+            events,
+          );
+        }
+      }
+    }
+  });
+
+  const dispatchPullRequestFollowup = Effect.fn("Orchestrator.dispatchPullRequestFollowup")(
+    function* (
+      command: Extract<
+        OrchestrationV2ServerCommand,
+        { readonly type: "thread.pull-request.followup" | "thread.pull-request-followup.reconcile" }
+      >,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+      effects: Ref.Ref<Array<PendingOrchestrationEffectV2>>,
+    ) {
+      const projection = yield* getProjectionWithPendingEvents(command.threadId, events);
+      const { thread } = projection;
+      const link = threadPullRequestsOf(thread).find(
+        (candidate) =>
+          candidate.source !== "stack-dismissed" && threadPullRequestKeysEqual(candidate, command),
+      );
+      const fail = (cause: string) =>
+        new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause,
+        });
+      if (!link) return yield* fail("Link the pull request before registering followup.");
+      let followup = link.followup;
+      const now = yield* DateTime.now;
+      const inactive =
+        thread.archivedAt !== null ||
+        thread.deletedAt !== null ||
+        thread.settledAt !== null ||
+        thread.settledOverride === "settled" ||
+        thread.snoozedUntil != null ||
+        thread.lineage.relationshipToParent === "subagent" ||
+        thread.lineage.sideChat === true ||
+        thread.delegatedFrom !== undefined;
+      if (command.type === "thread.pull-request.followup") {
+        const action = command.action;
+        if (action.type === "register") {
+          if (inactive)
+            return yield* fail("Only an active top-level owner can register landing followup.");
+          const owners = yield* projectionStore
+            .getThreadsWithPullRequests()
+            .pipe(mapDispatchError(command));
+          if (
+            owners.some(
+              (owner) =>
+                owner.id !== thread.id &&
+                owner.pullRequests?.some(
+                  (candidate) =>
+                    threadPullRequestKeysEqual(candidate, link) &&
+                    hasPendingPullRequestFollowup(candidate),
+                ),
+            )
+          ) {
+            return yield* fail(
+              "This pull request already has a landing owner in this environment.",
+            );
+          }
+          if (
+            followup?.status === "awaiting_terminal" ||
+            followup?.status === "verification_pending"
+          ) {
+            if (
+              followup.reviewedHead !== action.reviewedHead ||
+              followup.intendedBase !== action.intendedBase
+            )
+              return yield* fail(
+                "Release the previous generation before registering another reviewed head or base.",
+              );
+          } else {
+            followup = {
+              generation: (followup?.generation ?? 0) + 1,
+              reviewedHead: action.reviewedHead,
+              intendedBase: action.intendedBase,
+              status: "awaiting_terminal",
+            };
+            yield* emitPullRequestFollowup(command, thread, link, followup, events);
+          }
+        } else {
+          if (!followup || followup.generation !== action.generation)
+            return yield* fail("The followup generation changed.");
+          if (
+            action.type !== "acknowledge" &&
+            (followup.status === "released" || followup.status === "acknowledged")
+          ) {
+            if (action.type === "release" && followup.status === "released") return;
+            return yield* fail("The followup generation already has a final disposition.");
+          }
+          if (followup.status === "verification_pending") {
+            const pendingMessageId = followup.messageId;
+            for (const run of projection.runs.filter(
+              (run) => run.status === "queued" && run.userMessageId === pendingMessageId,
+            )) {
+              yield* dispatchQueuedRunCancel(
+                {
+                  type: "queued-run.cancel",
+                  commandId: command.commandId,
+                  threadId: thread.id,
+                  runId: run.id,
+                },
+                events,
+              );
+            }
+          }
+          if (action.type === "acknowledge") {
+            if (followup.status !== "verification_pending" && followup.status !== "acknowledged")
+              return yield* fail("No terminal result is awaiting verification.");
+            if (
+              followup.terminal.base !== followup.intendedBase ||
+              followup.terminal.type !== action.result.type ||
+              followup.terminal.base !== action.result.base ||
+              (followup.terminal.type === "merged" &&
+                (action.result.type !== "merged" ||
+                  followup.terminal.mergeSha !== action.result.mergeSha))
+            )
+              return yield* fail(
+                "Acknowledge the exact observed merge SHA and base for this generation.",
+              );
+            if (followup.status === "acknowledged") return;
+            yield* emitPullRequestFollowup(
+              command,
+              thread,
+              link,
+              {
+                generation: followup.generation,
+                reviewedHead: followup.reviewedHead,
+                intendedBase: followup.intendedBase,
+                status: "acknowledged",
+                terminal: followup.terminal,
+                evidence: action.evidence,
+                acknowledgedAt: DateTime.formatIso(now),
+              },
+              events,
+            );
+          } else {
+            yield* emitPullRequestFollowup(
+              command,
+              thread,
+              link,
+              {
+                generation: followup.generation,
+                reviewedHead: followup.reviewedHead,
+                intendedBase: followup.intendedBase,
+                status: action.type === "hold" ? "held" : "released",
+                reason: action.reason,
+              },
+              events,
+            );
+          }
+          return;
+        }
+      }
+      if (
+        !followup ||
+        (followup.status !== "awaiting_terminal" && followup.status !== "verification_pending")
+      )
+        return;
+      if (
+        inactive ||
+        projection.providerThreads.find(
+          (providerThread) => providerThread.id === thread.activeProviderThreadId,
+        )?.goal?.status === "paused" ||
+        projection.runtimeRequests.some((request) => request.status === "pending") ||
+        projection.runs.some((run) => run.status === "queued" && run.queueHeld === true)
+      )
+        return;
+      const snapshot = link.snapshot;
+      const terminal =
+        followup.status === "verification_pending"
+          ? followup.terminal
+          : snapshot?.state === "merged" && snapshot.mergeSha != null
+            ? { type: "merged" as const, mergeSha: snapshot.mergeSha, base: snapshot.baseBranch }
+            : snapshot?.state === "closed"
+              ? { type: "closed" as const, base: snapshot.baseBranch }
+              : undefined;
+      if (!terminal) return;
+      if (followup.status === "verification_pending") {
+        const previousRun = projection.runs.find((run) => run.userMessageId === followup.messageId);
+        if (
+          previousRun &&
+          ["queued", "preparing", "starting", "running", "waiting"].includes(previousRun.status)
+        )
+          return;
+        if (followup.attempts >= PULL_REQUEST_FOLLOWUP_MAX_ATTEMPTS) {
+          yield* emitPullRequestFollowup(
+            command,
+            thread,
+            link,
+            {
+              generation: followup.generation,
+              reviewedHead: followup.reviewedHead,
+              intendedBase: followup.intendedBase,
+              status: "held",
+              reason:
+                "Verification attempts exhausted without acknowledgement. Verify manually or explicitly register to resume.",
+            },
+            events,
+          );
+          return;
+        }
+        if (
+          DateTime.toEpochMillis(now) - Date.parse(followup.lastAttemptAt) <
+          PULL_REQUEST_FOLLOWUP_RETRY_MS
+        )
+          return;
+      }
+      const attempts = followup.status === "verification_pending" ? followup.attempts + 1 : 1;
+      const messageId = MessageId.make(
+        `pr-followup:${thread.id}:${threadPullRequestKeyOf(link)}:${followup.generation}:${attempts}`,
+      );
+      const pending = {
+        generation: followup.generation,
+        reviewedHead: followup.reviewedHead,
+        intendedBase: followup.intendedBase,
+        status: "verification_pending" as const,
+        terminal,
+        messageId,
+        attempts,
+        lastAttemptAt: DateTime.formatIso(now),
+      };
+      yield* emitPullRequestFollowup(command, thread, link, pending, events);
+      const result =
+        terminal.type === "merged"
+          ? `merged as ${terminal.mergeSha} into ${terminal.base}`
+          : `closed without merging into ${terminal.base}`;
+      yield* dispatchMessage(
+        {
+          type: "message.dispatch",
+          commandId: command.commandId,
+          threadId: thread.id,
+          messageId,
+          text: `Pull request #${link.number} (${link.url}) ${result}. Landing followup generation ${followup.generation} remains pending. Reviewed head ${followup.reviewedHead}; intended base ${followup.intendedBase}. ${terminal.type === "merged" ? "Verify the actual merge commit on the intended base and complete the requested post-merge checks." : "Report the closed-unmerged result; do not claim merge verification."} Then call acknowledge_pull_request_followup with this exact generation, result and verification evidence. Queue acceptance or a completed run does not acknowledge this obligation. If a human must take over, call hold_pull_request_followup or release_pull_request_followup with the reason.`,
+          notification: {
+            source: { kind: "monitor" },
+            outcome: "updated",
+            summary: `#${link.number}: ${result}; verification pending`,
+          },
+          attachments: [],
+          dispatchMode: { type: "queue_after_active" },
+          createdBy: "agent",
+          creationSource: "server",
+        },
+        events,
+        effects,
+      );
+    },
+  );
+
   // Recheck under the lock after reading the host. Record the watch first so wake events carry it.
   const dispatchPullRequestWatchSync = Effect.fn("orchestrationV2.dispatch.pullRequestWatchSync")(
     function* (
@@ -3683,6 +4041,18 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       }
       markUnreadVisitedAt = DateTime.subtract(latestRunCompletedAt, { milliseconds: 1 });
     }
+    if (
+      command.type === "thread.pull-request.unlink" &&
+      threadPullRequestsOf(thread).some(
+        (link) => threadPullRequestKeysEqual(link, command) && hasPendingPullRequestFollowup(link),
+      )
+    ) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: "Release the landing followup before unlinking this pull request.",
+      });
+    }
     const updatedThread: OrchestrationV2AppThread = (() => {
       switch (command.type) {
         case "thread.archive":
@@ -3869,6 +4239,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     ...threadPullRequestsOf(thread).filter(
                       (link) =>
                         !(
+                          link.followup === undefined &&
                           thread.linkedPullRequest &&
                           threadPullRequestKeysEqual(
                             link,
@@ -3963,16 +4334,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                   link.repository.toLowerCase() === key.repository &&
                   link.stack?.layers.some((layer) => layer.number === key.number),
               );
-            pullRequests = belongsToStack
-              ? links.map((link) =>
-                  link === existing
-                    ? {
-                        ...withPullRequestWatch(link, undefined),
-                        source: "stack-dismissed" as const,
-                      }
-                    : link,
-                )
-              : links.filter((link) => link !== existing);
+            pullRequests =
+              belongsToStack || existing.followup !== undefined
+                ? links.map((link) =>
+                    link === existing
+                      ? {
+                          ...withPullRequestWatch(link, undefined),
+                          source: "stack-dismissed" as const,
+                        }
+                      : link,
+                  )
+                : links.filter((link) => link !== existing);
           } else {
             if (!existing) return thread;
             pullRequests = links.map((link) =>
@@ -4027,6 +4399,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     snapshot: null,
                     stack: null,
                     ...(dismissed?.endedWatch && { endedWatch: dismissed.endedWatch }),
+                    ...(dismissed?.followup && { followup: dismissed.followup }),
                   },
                 ]
               : linked;
@@ -9058,6 +9431,118 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     },
   );
 
+  const dispatchExternalWaitRecord = Effect.fn("orchestrationV2.dispatch.externalWaitRecord")(
+    function* (
+      command: Extract<OrchestrationV2InternalCommand, { readonly type: "external_wait.record" }>,
+      events: Ref.Ref<Array<OrchestrationV2DomainEvent>>,
+    ) {
+      const projection = yield* projectionStore
+        .getThreadRecords(command.threadId, ["runs", "nodes", "turnItems", "providerTurns"], {
+          turnItemTypes: ["external_wait"],
+          messageRoles: [],
+        })
+        .pipe(
+          Effect.mapError(
+            (cause) => new OrchestratorProjectionError({ threadId: command.threadId, cause }),
+          ),
+        );
+      const run = projection.runs.find((candidate) => candidate.id === command.runId);
+      const record = command.record;
+      if (
+        run === undefined ||
+        run.rootNodeId !== command.nodeId ||
+        record.itemId !== command.record.itemId ||
+        record.ownerThreadId !== command.threadId ||
+        record.ownerRunId !== command.runId
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `External wait ${record.itemId} does not belong to run ${command.runId}.`,
+        });
+      }
+      const existing = projection.turnItems.find((item) => item.id === record.itemId);
+      if (existing !== undefined && existing.type !== "external_wait") {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `Turn item ${record.itemId} is not an external wait.`,
+        });
+      }
+      if (
+        existing !== undefined &&
+        existing.type === "external_wait" &&
+        (existing.ownerRunId !== record.ownerRunId ||
+          existing.ownerThreadId !== record.ownerThreadId ||
+          existing.generation !== record.generation ||
+          existing.dependency.host !== record.dependency.host ||
+          existing.dependency.repository !== record.dependency.repository ||
+          existing.dependency.runId !== record.dependency.runId ||
+          existing.dependency.attempt !== record.dependency.attempt ||
+          existing.dependency.expectedHeadSha !== record.dependency.expectedHeadSha)
+      ) {
+        return yield* new OrchestratorDispatchError({
+          commandId: command.commandId,
+          commandType: command.type,
+          cause: `External wait ${record.itemId} is already bound to another owner or dependency.`,
+        });
+      }
+      const now = yield* DateTime.now;
+      const completedAt =
+        record.state.kind === "terminal"
+          ? record.state.observedAt
+          : record.state.kind === "cancelled"
+            ? record.state.cancelledAt
+            : record.state.kind === "disposed"
+              ? record.state.disposedAt
+              : null;
+      const status =
+        record.state.kind === "pending" || record.state.kind === "held"
+          ? "waiting"
+          : record.state.kind === "terminal"
+            ? "completed"
+            : "cancelled";
+      const turnItem: OrchestrationV2TurnItem =
+        existing !== undefined &&
+        existing.type === "external_wait" &&
+        existing.status === "completed" &&
+        status !== "completed"
+          ? existing
+          : {
+              id: record.itemId,
+              threadId: command.threadId,
+              runId: command.runId,
+              nodeId: command.nodeId,
+              providerThreadId: run.providerThreadId,
+              providerTurnId: providerTurnForRun(projection, run)?.id ?? null,
+              nativeItemRef: null,
+              parentItemId: null,
+              ordinal:
+                existing?.ordinal === undefined
+                  ? yield* nextTurnItemOrdinal(projection)
+                  : existing.ordinal,
+              status,
+              title: `External wait: ${record.dependency.repository}#${record.dependency.runId}`,
+              startedAt: existing?.startedAt ?? now,
+              completedAt,
+              updatedAt: now,
+              ...record,
+            };
+      yield* emit(
+        events,
+        command,
+      )({
+        type: "turn-item.updated",
+        threadId: command.threadId,
+        runId: command.runId,
+        nodeId: command.nodeId,
+        providerInstanceId: run.providerInstanceId,
+        occurredAt: now,
+        payload: turnItem,
+      });
+    },
+  );
+
   /**
    * Records or updates the card for a link an agent asked the user to make.
    * The pairing code goes straight to the link and never through orchestration.
@@ -10061,6 +10546,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     }
     const queuedMessage = projection.messages.find(
       (candidate) => candidate.id === queuedRun.userMessageId,
+    );
+    yield* holdPullRequestFollowups(
+      command,
+      command.threadId,
+      events,
+      "held",
+      queuedRun.userMessageId,
     );
     if (queuedMessage?.delegatedCompletion !== undefined) {
       const now = yield* DateTime.now;
@@ -11155,7 +11647,12 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
               ),
             )).messages;
     const bufferedMessageIds = new Set(
-      queuedMessages.filter(isBufferedProviderNotification).map((message) => message.id),
+      queuedMessages
+        .filter(
+          (message) =>
+            isBufferedProviderNotification(message) || message.id.startsWith("pr-followup:"),
+        )
+        .map((message) => message.id),
     );
     for (const run of runs) {
       // A resumed queue can have a lower ordinal than a pending continuation source.
@@ -13385,6 +13882,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           );
         if (
           thread.settledOverride !== null ||
+          thread.pullRequests?.some(hasPendingPullRequestFollowup) ||
           DateTime.toEpochMillis(thread.updatedAt) > DateTime.toEpochMillis(command.snapshotAt)
         ) {
           return yield* new OrchestratorDispatchError({
@@ -13490,6 +13988,21 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "thread.model-selection.set":
       case "provider.switch":
         yield* dispatchThreadMutation(command, events, effects);
+        if (command.type === "thread.settle" || command.type === "thread.archive") {
+          yield* holdPullRequestFollowups(command, command.threadId, events, "released");
+        } else if (command.type === "thread.snooze") {
+          yield* holdPullRequestFollowups(command, command.threadId, events, "held");
+        } else if (command.type === "thread.pull-request-link.sync") {
+          yield* dispatchPullRequestFollowup(
+            { ...command, type: "thread.pull-request-followup.reconcile" },
+            events,
+            effects,
+          );
+        }
+        break;
+      case "thread.pull-request.followup":
+      case "thread.pull-request-followup.reconcile":
+        yield* dispatchPullRequestFollowup(command, events, effects);
         break;
       case "thread.pull-request-watch.sync":
         yield* dispatchPullRequestWatchSync(command, events, effects);
@@ -13564,6 +14077,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "run.interrupt":
         cancelUnsettledEffects = yield* dispatchRunInterrupt(command, events, effects);
+        yield* holdPullRequestFollowups(command, command.threadId, events, "held");
         if (command.holdQueue === true) {
           // Stop must still commit when a child can't be read, so a failed repair's
           // partial events are dropped.
@@ -13592,6 +14106,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         break;
       case "thread.stop":
         cancelUnsettledEffects = yield* dispatchThreadStop(command, events, effects);
+        yield* holdPullRequestFollowups(command, command.threadId, events, "held");
         break;
       case "queued-message.promote-to-steer":
         cancelUnsettledEffects = yield* dispatchQueuedMessagePromoteToSteer(
@@ -13739,6 +14254,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       case "secret_request.record":
         yield* dispatchSecretRequestRecord(command, events);
         break;
+      case "external_wait.record":
+        yield* dispatchExternalWaitRecord(command, events);
+        break;
       case "link_request.record":
         yield* dispatchLinkRequestRecord(command, events, effects);
         break;
@@ -13845,6 +14363,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       Effect.filterOrFail(
         (planned) =>
           planned.events.length > 0 ||
+          command.type === "thread.pull-request.followup" ||
+          command.type === "thread.pull-request-followup.reconcile" ||
           command.type === "thread.background-work.settle" ||
           command.type === "thread.interrupt.unresponsive" ||
           command.type === "thread.stop" ||
@@ -14032,12 +14552,17 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     } satisfies OrchestratorV2DispatchResult;
   }, withCommandMetrics);
 
+  const followupRegistration = yield* Semaphore.make(1);
+
   // dispatchWithReceiptEffect owns the dispatch span; this wrapper selects the thread locks.
   const dispatchWithReceipt = Effect.fnUntraced(function* (command: OrchestrationV2ServerCommand) {
     const dispatch = threadDispatch.withLock(
       commandThreadId(command),
       dispatchWithReceiptEffect(command),
     );
+    if (command.type === "thread.pull-request.followup" && command.action.type === "register") {
+      return yield* followupRegistration.withPermit(dispatch);
+    }
     // A parent's lock comes before its side chats' locks, so a delete cascade and a side chat
     // fork or command never interleave. A fork from a side chat or onto an existing thread would
     // invert that order; dispatch rejects both, so they skip the source lock.

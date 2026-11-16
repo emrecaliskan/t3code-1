@@ -252,7 +252,18 @@ it.effect("preserves pull request context without inheriting any watches", () =>
         }) satisfies ThreadPullRequestLink,
     );
     const watchedLinks: ReadonlyArray<ThreadPullRequestLink> = links.map((link, index) =>
-      index < 2 ? { ...link, watch } : link,
+      index < 2
+        ? {
+            ...link,
+            watch,
+            followup: {
+              status: "awaiting_terminal",
+              generation: 1,
+              reviewedHead: "reviewed",
+              intendedBase: "main",
+            },
+          }
+        : link,
     );
     const legacyLink = {
       projectId: makeSourceThread().projectId,

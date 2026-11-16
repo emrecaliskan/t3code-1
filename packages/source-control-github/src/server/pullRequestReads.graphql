@@ -82,6 +82,9 @@ query PullRequestCore(
       createdAt
       updatedAt
       mergedAt
+      mergeCommit {
+        oid
+      }
       closedAt
       headRefName
       baseRefName

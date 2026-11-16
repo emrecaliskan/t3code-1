@@ -1696,6 +1696,7 @@ export const make = Effect.gen(function* () {
     title: changeRequest.title,
     url: changeRequest.url,
     state: changeRequest.state,
+    mergeSha: changeRequest.mergeSha ?? null,
     headBranch: changeRequest.headBranch,
     baseBranch: changeRequest.baseBranch,
     // An action reply may not carry these, and null would erase a time a client already holds.
@@ -1833,6 +1834,7 @@ export const make = Effect.gen(function* () {
             updatedAt: changeRequest.updatedAt,
             observedAt,
             mergedAt: changeRequest.mergedAt,
+            mergeSha: changeRequest.mergeSha ?? null,
             closedAt: changeRequest.closedAt,
             reviewers: changeRequest.reviewers,
             labels: changeRequest.labels,
@@ -3232,6 +3234,7 @@ export const make = Effect.gen(function* () {
     baseBranch: detail.baseBranch,
     closedAt: detail.closedAt,
     mergedAt: detail.mergedAt,
+    mergeSha: detail.mergeSha ?? null,
     updatedAt: detail.updatedAt,
     observedAt: detail.observedAt,
   });

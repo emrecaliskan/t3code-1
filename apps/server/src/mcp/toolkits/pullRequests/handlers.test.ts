@@ -624,6 +624,7 @@ describe("pull request toolkit handlers", () => {
       const result = yield* harness.call("list_thread_pull_requests", {});
       expect(result.pullRequests.map((entry) => entry.number)).toEqual([3, 1, 2, 10]);
       expect(result.pullRequests[0]).toEqual({
+        mergeSha: null,
         host: "github.com",
         repository: "t3tools/t3code",
         number: 3,

@@ -111,7 +111,7 @@ type PendingBackgroundWorkRun = Pick<OrchestrationV2Run, "id" | "ordinal" | "sta
 
 export type PendingBackgroundWorkPullRequest = Pick<
   ThreadPullRequestLink,
-  "host" | "repository" | "number" | "url" | "source" | "watch"
+  "host" | "repository" | "number" | "url" | "source" | "watch" | "followup"
 > & {
   readonly snapshot: Pick<NonNullable<ThreadPullRequestLink["snapshot"]>, "state"> | null;
 };
@@ -295,10 +295,13 @@ export function watchedPullRequests<Link extends PendingBackgroundWorkPullReques
 ): Array<Link> {
   return (pullRequests ?? []).filter(
     (link) =>
-      // The watch reactor ends a merged PR's watch without waking the agent, so it holds nothing.
-      link.watch !== undefined &&
+      (link.watch !== undefined ||
+        link.followup?.status === "awaiting_terminal" ||
+        link.followup?.status === "verification_pending") &&
       link.source !== "stack-dismissed" &&
-      link.snapshot?.state !== "merged",
+      (link.snapshot?.state !== "merged" ||
+        link.followup?.status === "awaiting_terminal" ||
+        link.followup?.status === "verification_pending"),
   );
 }
 
@@ -317,7 +320,11 @@ function pullRequestWatchTasks(
 ): Array<PendingBackgroundWorkTask> {
   return watchedPullRequests(pullRequests).map((link) => ({
     taskId: pullRequestWatchTaskId(link),
-    description: `Watching pull request #${link.number}`,
+    description:
+      link.followup?.status === "awaiting_terminal" ||
+      link.followup?.status === "verification_pending"
+        ? `Pull request #${link.number} followup ${link.followup?.status}`
+        : `Watching pull request #${link.number}`,
     kind: "monitor" as const,
     awaited: true as const,
   }));

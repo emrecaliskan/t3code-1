@@ -104,6 +104,7 @@ interface ListItemFields {
   readonly createdAt: string;
   readonly updatedAt: string;
   readonly mergedAt?: string | null | undefined;
+  readonly mergeCommit?: { readonly oid: string } | null | undefined;
   readonly reviewRequests?: ReadonlyArray<ReviewRequestFields> | undefined;
   readonly latestReviews?: ReadonlyArray<LatestReviewFields> | undefined;
   readonly labels?: ReadonlyArray<LabelFields> | undefined;
@@ -359,6 +360,7 @@ export interface GitHubPullRequestDetail extends GitHubPullRequestListItem {
   readonly body: string;
   readonly changedFiles: number;
   readonly mergedAt: string | null;
+  readonly mergeSha?: string | null | undefined;
   readonly closedAt: string | null;
   readonly checks: ReadonlyArray<PullRequestCheck>;
   readonly autoMergeEnabled?: boolean;
@@ -777,6 +779,7 @@ function toDetail(raw: DetailFields): GitHubPullRequestDetail {
     body: raw.body ?? "",
     changedFiles: raw.changedFiles ?? 0,
     mergedAt: trimmed(raw.mergedAt),
+    mergeSha: trimmed(raw.mergeCommit?.oid),
     closedAt: trimmed(raw.closedAt),
     checks: toChecks(raw.statusCheckRollup),
     ...(raw.autoMergeRequest === undefined
@@ -928,6 +931,7 @@ export interface GitHubPullRequestSummary {
   readonly isDraft: boolean;
   readonly closedAt: string | null;
   readonly mergedAt: string | null;
+  readonly mergeSha?: string | null | undefined;
   readonly updatedAt: string;
   readonly author: PullRequestActor | null;
   readonly additions: number;
@@ -951,6 +955,7 @@ export function toPullRequestSummary(pr: SummarizedPullRequest): GitHubPullReque
     isDraft: pr.isDraft,
     closedAt: trimmed(pr.closedAt),
     mergedAt: trimmed(pr.mergedAt),
+    mergeSha: trimmed(pr.mergeCommit?.oid),
     updatedAt: pr.updatedAt,
     author: toActor(pr.author),
     additions: pr.additions,

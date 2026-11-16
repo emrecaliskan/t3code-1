@@ -103,9 +103,8 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
       const { delegatedFrom: _delegatedFrom, ...inherited } = input.sourceProjection.thread;
       const targetThread: OrchestrationV2AppThread = {
         ...inherited,
-        // PR context follows the conversation; watching remains the source thread's responsibility.
         pullRequests: input.sourceProjection.thread.pullRequests?.map(
-          ({ watch: _watch, ...link }) => link,
+          ({ watch: _watch, followup: _followup, ...link }) => link,
         ),
         createdBy: input.createdBy,
         creationSource: input.creationSource,

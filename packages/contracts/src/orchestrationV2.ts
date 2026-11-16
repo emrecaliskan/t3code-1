@@ -60,6 +60,7 @@ import {
   ThreadLinkedPullRequest,
   ThreadPullRequestLink,
   ThreadPullRequestKey,
+  PullRequestFollowupAction,
   ThreadPullRequestLinkSource,
   ThreadPullRequestSnapshot,
   ThreadPullRequestStack,
@@ -1602,6 +1603,97 @@ const OrchestrationV2LinkRequestFields = {
   failure: Schema.optional(Schema.String),
 } as const;
 
+export const OrchestrationV2ExternalWaitDependency = Schema.Struct({
+  host: TrimmedNonEmptyString,
+  repository: TrimmedNonEmptyString,
+  runId: TrimmedNonEmptyString,
+  attempt: PositiveInt,
+  expectedHeadSha: TrimmedNonEmptyString,
+});
+export type OrchestrationV2ExternalWaitDependency =
+  typeof OrchestrationV2ExternalWaitDependency.Type;
+
+export const OrchestrationV2ExternalWaitResult = Schema.Literals([
+  "remote_success",
+  "remote_failure",
+  "remote_cancelled",
+  "remote_startup_failure",
+  "deadline",
+  "observer_error",
+]);
+export type OrchestrationV2ExternalWaitResult = typeof OrchestrationV2ExternalWaitResult.Type;
+
+export const OrchestrationV2ExternalWaitState = Schema.Union([
+  Schema.Struct({
+    kind: Schema.Literal("pending"),
+    nextDueAt: Schema.DateTimeUtc,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("held"),
+    reason: Schema.Literals(["paused", "decision", "quota", "provider_disabled"]),
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("terminal"),
+    result: OrchestrationV2ExternalWaitResult,
+    observedAt: Schema.DateTimeUtc,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("cancelled"),
+    cancelledAt: Schema.DateTimeUtc,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("disposed"),
+    disposedAt: Schema.DateTimeUtc,
+    prior: Schema.Literals(["pending", "held", "cancelled"]),
+  }),
+]);
+export type OrchestrationV2ExternalWaitState = typeof OrchestrationV2ExternalWaitState.Type;
+
+export const OrchestrationV2ExternalWaitDelivery = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("undelivered") }),
+  Schema.Struct({ kind: Schema.Literal("queueing"), attempt: PositiveInt }),
+  Schema.Struct({
+    kind: Schema.Literal("queued"),
+    attempt: PositiveInt,
+    queuedAt: Schema.DateTimeUtc,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("accepted"),
+    acceptedAt: Schema.DateTimeUtc,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("failed"),
+    attempt: PositiveInt,
+    reason: TrimmedNonEmptyString,
+  }),
+  Schema.Struct({
+    kind: Schema.Literal("held"),
+    reason: Schema.Literals(["retry_limit", "paused", "decision", "quota"]),
+  }),
+  Schema.Struct({ kind: Schema.Literal("disposed") }),
+]);
+export type OrchestrationV2ExternalWaitDelivery = typeof OrchestrationV2ExternalWaitDelivery.Type;
+
+export const OrchestrationV2ExternalWaitRecord = Schema.Struct({
+  type: Schema.Literal("external_wait"),
+  itemId: TurnItemId,
+  ownerThreadId: ThreadId,
+  ownerRunId: RunId,
+  callerKey: TrimmedNonEmptyString,
+  generation: PositiveInt,
+  dependency: OrchestrationV2ExternalWaitDependency,
+  deadlineAt: Schema.DateTimeUtc,
+  state: OrchestrationV2ExternalWaitState,
+  reservedMessageId: MessageId,
+  queuedRunId: RunId,
+  delivery: OrchestrationV2ExternalWaitDelivery,
+});
+export type OrchestrationV2ExternalWaitRecord = typeof OrchestrationV2ExternalWaitRecord.Type;
+
+const OrchestrationV2ExternalWaitFields = {
+  ...OrchestrationV2ExternalWaitRecord.fields,
+} as const;
+
 export const OrchestrationV2TurnItem = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -1799,6 +1891,10 @@ export const OrchestrationV2TurnItem = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
     ...OrchestrationV2LinkRequestFields,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2TurnItemBaseFields,
+    ...OrchestrationV2ExternalWaitFields,
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -2634,6 +2730,52 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
+    ...OrchestrationV2ExternalWaitFields,
+    deadlineAt: Schema.DateTimeUtcFromString,
+    state: Schema.Union([
+      Schema.Struct({ kind: Schema.Literal("pending"), nextDueAt: Schema.DateTimeUtcFromString }),
+      Schema.Struct({
+        kind: Schema.Literal("held"),
+        reason: Schema.Literals(["paused", "decision", "quota", "provider_disabled"]),
+      }),
+      Schema.Struct({
+        kind: Schema.Literal("terminal"),
+        result: OrchestrationV2ExternalWaitResult,
+        observedAt: Schema.DateTimeUtcFromString,
+      }),
+      Schema.Struct({
+        kind: Schema.Literal("cancelled"),
+        cancelledAt: Schema.DateTimeUtcFromString,
+      }),
+      Schema.Struct({
+        kind: Schema.Literal("disposed"),
+        disposedAt: Schema.DateTimeUtcFromString,
+        prior: Schema.Literals(["pending", "held", "cancelled"]),
+      }),
+    ]),
+    delivery: Schema.Union([
+      Schema.Struct({ kind: Schema.Literal("undelivered") }),
+      Schema.Struct({ kind: Schema.Literal("queueing"), attempt: PositiveInt }),
+      Schema.Struct({
+        kind: Schema.Literal("queued"),
+        attempt: PositiveInt,
+        queuedAt: Schema.DateTimeUtcFromString,
+      }),
+      Schema.Struct({ kind: Schema.Literal("accepted"), acceptedAt: Schema.DateTimeUtcFromString }),
+      Schema.Struct({
+        kind: Schema.Literal("failed"),
+        attempt: PositiveInt,
+        reason: TrimmedNonEmptyString,
+      }),
+      Schema.Struct({
+        kind: Schema.Literal("held"),
+        reason: Schema.Literals(["retry_limit", "paused", "decision", "quota"]),
+      }),
+      Schema.Struct({ kind: Schema.Literal("disposed") }),
+    ]),
+  }),
+  Schema.Struct({
+    ...OrchestrationV2TurnItemJsonBaseFields,
     type: Schema.Literal("subagent"),
     subagentId: NodeId,
     origin: Schema.Literals(["provider_native", "app_owned"]),
@@ -3097,6 +3239,13 @@ export const OrchestrationV2Command = Schema.Union([
     stack: Schema.NullOr(ThreadPullRequestStack),
   }),
   Schema.Struct({
+    type: Schema.Literal("thread.pull-request.followup"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    ...ThreadPullRequestKey.fields,
+    action: PullRequestFollowupAction,
+  }),
+  Schema.Struct({
     type: Schema.Literal("thread.pull-request.watch"),
     commandId: CommandId,
     threadId: ThreadId,
@@ -3424,6 +3573,12 @@ const OrchestrationV2InternalCommand = Schema.Union([
     projectId: ProjectId,
   }),
   Schema.Struct({
+    type: Schema.Literal("thread.pull-request-followup.reconcile"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    ...ThreadPullRequestKey.fields,
+  }),
+  Schema.Struct({
     type: Schema.Literal("thread.pull-request-watch.sync"),
     commandId: CommandId,
     threadId: ThreadId,
@@ -3582,6 +3737,15 @@ const OrchestrationV2InternalCommand = Schema.Union([
         notification: OrchestrationV2Notification,
       }),
     ),
+  }),
+  /** Records a finite external dependency as a durable turn item. */
+  Schema.Struct({
+    type: Schema.Literal("external_wait.record"),
+    commandId: CommandId,
+    threadId: ThreadId,
+    runId: RunId,
+    nodeId: NodeId,
+    record: OrchestrationV2ExternalWaitRecord,
   }),
 ]);
 export type OrchestrationV2InternalCommand = typeof OrchestrationV2InternalCommand.Type;

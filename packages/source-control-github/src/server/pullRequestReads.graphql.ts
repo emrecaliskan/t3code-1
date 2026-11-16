@@ -206,6 +206,13 @@ export declare namespace ActorAvatars {
   export type Result = typeof ActorAvatars.result.Type
 }
 
+/** Represents a Git commit. */
+export const MergeCommitCommit = Schema.Struct({
+  /** The Git object ID */
+  oid: Shared.GitObjectID
+})
+export interface MergeCommitCommit extends Schema.Struct.Type<typeof MergeCommitCommit.fields> {}
+
 /** Represents an owner of a Repository. */
 export const RepositoryOwner = Schema.Struct({
   __typename: GraphQL.otherTypename<Shared.Typename.RepositoryOwner>()([]),
@@ -429,6 +436,8 @@ export const PullRequestCoreRepositoryPullRequestPullRequest = Schema.Struct({
   updatedAt: Shared.DateTime,
   /** The date and time that the pull request was merged. */
   mergedAt: Schema.NullOr(Shared.DateTime),
+  /** The commit that was created when this pull request was merged. */
+  mergeCommit: Schema.NullOr(MergeCommitCommit),
   /** Identifies the date and time when the object was closed. */
   closedAt: Schema.NullOr(Shared.DateTime),
   /** Identifies the name of the head Ref associated with the pull request, even if the ref has been deleted. */
@@ -503,7 +512,7 @@ export const PullRequestCore = GraphQL.query("PullRequestCore", {
       { name: "requestedReviewers", body: "Int!" }
     ],
     selections: [
-      { name: "repository", body: ["(owner:$", "owner", " name:$", "name", "){mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed autoMergeAllowed viewerPermission pullRequest(number:$", "number", "){number title url body state isDraft mergeable mergeStateStatus reviewDecision additions deletions changedFiles createdAt updatedAt mergedAt closedAt headRefName baseRefName headRefOid isCrossRepository maintainerCanModify headRepositoryOwner{__typename login}headRepository{nameWithOwner viewerPermission}headRef{id}author{__typename login avatarUrl...on User{id name}}autoMergeRequest{mergeMethod}viewerCanUpdate viewerDidAuthor viewerCanUpdateBranch baseRef{compare(headRef:$", "headRef", "){behindBy}}reviewRequests(first:$", "requestedReviewers", "){nodes{requestedReviewer{__typename...on User{login name}...on Bot{login}...on Team{slug combinedSlug teamName:name teamAvatarUrl:avatarUrl}}}}labels(first:100){nodes{name color}}commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{__typename...", "CheckContext", "}pageInfo{hasNextPage endCursor}}}}}}}}"] }
+      { name: "repository", body: ["(owner:$", "owner", " name:$", "name", "){mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed autoMergeAllowed viewerPermission pullRequest(number:$", "number", "){number title url body state isDraft mergeable mergeStateStatus reviewDecision additions deletions changedFiles createdAt updatedAt mergedAt mergeCommit{oid}closedAt headRefName baseRefName headRefOid isCrossRepository maintainerCanModify headRepositoryOwner{__typename login}headRepository{nameWithOwner viewerPermission}headRef{id}author{__typename login avatarUrl...on User{id name}}autoMergeRequest{mergeMethod}viewerCanUpdate viewerDidAuthor viewerCanUpdateBranch baseRef{compare(headRef:$", "headRef", "){behindBy}}reviewRequests(first:$", "requestedReviewers", "){nodes{requestedReviewer{__typename...on User{login name}...on Bot{login}...on Team{slug combinedSlug teamName:name teamAvatarUrl:avatarUrl}}}}labels(first:100){nodes{name color}}commits(last:1){nodes{commit{statusCheckRollup{contexts(first:100){nodes{__typename...", "CheckContext", "}pageInfo{hasNextPage endCursor}}}}}}}}"] }
     ],
     fragments: [
       { name: "CheckContext", body: ["on StatusCheckRollupContext{__typename...on StatusContext{context state targetUrl createdAt description isRequired(pullRequestNumber:$", "number", ")@include(if:$", "required", ")}...on CheckRun{name status conclusion startedAt completedAt detailsUrl isRequired(pullRequestNumber:$", "number", ")@include(if:$", "required", ")checkSuite{workflowRun{workflow{name}}}}}"] }

@@ -17,6 +17,9 @@ query PullRequestSummary($owner: String!, $name: String!, $number: Int!, $stacks
       changedFiles
       updatedAt
       mergedAt
+      mergeCommit {
+        oid
+      }
       closedAt
       headRefName
       baseRefName
