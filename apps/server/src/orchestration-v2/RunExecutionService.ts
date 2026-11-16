@@ -921,6 +921,43 @@ export const layer: Layer.Layer<
           failure,
           threadDisposition: "reusable",
         });
+        const retireUnstartedRun = Effect.fn("RunExecutionService.retireUnstartedRun")(() =>
+          writeFinalRunEvents({
+            run: input.run,
+            rootNode: input.rootNode,
+            checkpointScope: input.checkpointScope,
+            providerThread: input.providerThread,
+            attempt: input.attempt,
+            terminal: {
+              type: "turn.terminal",
+              driver: input.providerThread.driver,
+              providerThreadId: input.providerThread.id,
+              providerTurnId:
+                input.attempt.providerTurnId ??
+                idAllocator.derive.providerTurn({
+                  driver: input.providerThread.driver,
+                  nativeTurnId: `cancelled:${input.attempt.id}`,
+                }),
+              runOrdinal: input.run.ordinal,
+              status: "cancelled",
+              failure: null,
+              reason: "Provider startup eligibility was withdrawn.",
+              threadDisposition: "reusable",
+            },
+            failureItemPersisted: false,
+            refreshAfterTurn,
+            writeIfRunCurrent: { activeAttemptId: input.attemptId, expectedStatus: "running" },
+          }).pipe(
+            Effect.mapError(
+              (cause) =>
+                new RunExecutionStartError({
+                  commandId: input.commandId,
+                  runId: input.run.id,
+                  cause,
+                }),
+            ),
+          ),
+        );
         const responseStreamingMode = yield* Effect.gen(function* () {
           const responseStreamingMode = yield* serverSettings.getSettings.pipe(
             Effect.map(
@@ -951,6 +988,7 @@ export const layer: Layer.Layer<
             input.shouldStartProviderTurn !== undefined &&
             !(yield* input.shouldStartProviderTurn())
           ) {
+            yield* retireUnstartedRun();
             return null;
           }
           return responseStreamingMode;
@@ -1721,6 +1759,7 @@ export const layer: Layer.Layer<
             : yield* Effect.exit(input.shouldStartProviderTurn());
         if (Exit.isSuccess(shouldStart) && !shouldStart.value) {
           yield* Fiber.interrupt(providerEventFiber);
+          yield* retireUnstartedRun();
           return;
         }
 
