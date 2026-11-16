@@ -1603,6 +1603,47 @@ const OrchestrationV2LinkRequestFields = {
   failure: Schema.optional(Schema.String),
 } as const;
 
+export const OrchestrationV2ExternalWaitDependency = Schema.Struct({
+  host: TrimmedNonEmptyString,
+  repository: TrimmedNonEmptyString,
+  runId: TrimmedNonEmptyString,
+  attempt: PositiveInt,
+  expectedHeadSha: TrimmedNonEmptyString,
+});
+export type OrchestrationV2ExternalWaitDependency =
+  typeof OrchestrationV2ExternalWaitDependency.Type;
+
+export const OrchestrationV2ExternalWaitResult = Schema.Literals([
+  "remote_success",
+  "remote_failure",
+  "remote_cancelled",
+  "remote_startup_failure",
+  "deadline",
+  "observer_error",
+]);
+export type OrchestrationV2ExternalWaitResult = typeof OrchestrationV2ExternalWaitResult.Type;
+
+export const OrchestrationV2ExternalWaitDelivery = Schema.Literals([
+  "undelivered",
+  "queued",
+  "accepted",
+]);
+export type OrchestrationV2ExternalWaitDelivery = typeof OrchestrationV2ExternalWaitDelivery.Type;
+
+const OrchestrationV2ExternalWaitFields = {
+  type: Schema.Literal("external_wait"),
+  dependency: OrchestrationV2ExternalWaitDependency,
+  callerKey: TrimmedNonEmptyString,
+  generation: PositiveInt,
+  deadlineAt: Schema.DateTimeUtc,
+  nextDueAt: Schema.optional(Schema.DateTimeUtc),
+  result: Schema.optional(Schema.NullOr(Schema.String)),
+  observedAt: Schema.optional(Schema.DateTimeUtc),
+  reservedMessageId: MessageId,
+  queuedRunId: RunId,
+  delivery: OrchestrationV2ExternalWaitDelivery,
+} as const;
+
 export const OrchestrationV2TurnItem = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -1800,6 +1841,10 @@ export const OrchestrationV2TurnItem = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
     ...OrchestrationV2LinkRequestFields,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2TurnItemBaseFields,
+    ...OrchestrationV2ExternalWaitFields,
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemBaseFields,
@@ -2632,6 +2677,13 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
     ...OrchestrationV2LinkRequestFields,
+  }),
+  Schema.Struct({
+    ...OrchestrationV2TurnItemJsonBaseFields,
+    ...OrchestrationV2ExternalWaitFields,
+    deadlineAt: Schema.DateTimeUtcFromString,
+    nextDueAt: Schema.optional(Schema.DateTimeUtcFromString),
+    observedAt: Schema.optional(Schema.DateTimeUtcFromString),
   }),
   Schema.Struct({
     ...OrchestrationV2TurnItemJsonBaseFields,
