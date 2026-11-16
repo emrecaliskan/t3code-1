@@ -6,7 +6,7 @@ import type {
   ThreadId,
   ThreadPullRequestLink,
 } from "@t3tools/contracts";
-import { hasPendingPullRequestFollowup, isOrchestrationV2WorkActive } from "@t3tools/contracts";
+import { isOrchestrationV2WorkActive } from "@t3tools/contracts";
 import * as Predicate from "effect/Predicate";
 
 import { resolveT3McpToolId } from "./t3McpToolPresentation.ts";
@@ -295,9 +295,13 @@ export function watchedPullRequests<Link extends PendingBackgroundWorkPullReques
 ): Array<Link> {
   return (pullRequests ?? []).filter(
     (link) =>
-      (link.watch !== undefined || hasPendingPullRequestFollowup(link)) &&
+      (link.watch !== undefined ||
+        link.followup?.status === "awaiting_terminal" ||
+        link.followup?.status === "verification_pending") &&
       link.source !== "stack-dismissed" &&
-      (link.snapshot?.state !== "merged" || hasPendingPullRequestFollowup(link)),
+      (link.snapshot?.state !== "merged" ||
+        link.followup?.status === "awaiting_terminal" ||
+        link.followup?.status === "verification_pending"),
   );
 }
 
@@ -316,9 +320,11 @@ function pullRequestWatchTasks(
 ): Array<PendingBackgroundWorkTask> {
   return watchedPullRequests(pullRequests).map((link) => ({
     taskId: pullRequestWatchTaskId(link),
-    description: hasPendingPullRequestFollowup(link)
-      ? `Pull request #${link.number} followup ${link.followup?.status}`
-      : `Watching pull request #${link.number}`,
+    description:
+      link.followup?.status === "awaiting_terminal" ||
+      link.followup?.status === "verification_pending"
+        ? `Pull request #${link.number} followup ${link.followup?.status}`
+        : `Watching pull request #${link.number}`,
     kind: "monitor" as const,
     awaited: true as const,
   }));

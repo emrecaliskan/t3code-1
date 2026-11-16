@@ -440,9 +440,9 @@ describe("derivePendingBackgroundWork kinds", () => {
           pullRequests: [{ ...link(9, { watched: false, state: "merged" }), followup }],
         });
         expect(tasks.map((task) => task.description)).toEqual(
-          status === "released" ? [] : [`Pull request #9 followup ${status}`],
+          status === "awaiting_terminal" ? [`Pull request #9 followup ${status}`] : [],
         );
-        expect(backgroundWorkHoldsCompletion(tasks)).toBe(status !== "released");
+        expect(backgroundWorkHoldsCompletion(tasks)).toBe(status === "awaiting_terminal");
       },
     );
 
