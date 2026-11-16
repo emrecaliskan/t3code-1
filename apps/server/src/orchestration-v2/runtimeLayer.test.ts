@@ -3370,7 +3370,7 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           commandId: CommandId.make(`followup-create-${disposition}`),
           threadId,
           projectId: ProjectId.make(`followup-project-${disposition}`),
-          title: "Verify landing",
+          title: "Verify main and complete the promised 19-node timing proof",
           modelSelection,
           runtimeMode: "full-access",
           interactionMode: "default",
@@ -3473,6 +3473,16 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
             (yield* orchestrator.getThreadShell(threadId))?.pullRequests?.[0]?.followup?.status,
             "verification_pending",
           );
+          const completed = (yield* orchestrator.getThreadShell(threadId))!;
+          const postMergeSettlement = yield* orchestrator
+            .dispatch({
+              type: "thread.auto-settle",
+              commandId: CommandId.make(`followup-proof-still-due-${disposition}-${attempt}`),
+              threadId,
+              snapshotAt: completed.updatedAt,
+            })
+            .pipe(Effect.flip);
+          assert.equal(postMergeSettlement._tag, "OrchestratorDispatchError");
           assert.isTrue((yield* maintenance.rebuild).valid);
           yield* TestClock.adjust("15 minutes");
           yield* orchestrator.dispatch({
@@ -3525,7 +3535,8 @@ it.layer(layerTest)("OrchestrationV2LayerLive lifecycle", (it) => {
           type: "acknowledge" as const,
           generation: pending.generation,
           result: { type: "merged" as const, mergeSha: "actual-merge", base: "main" },
-          evidence: "Verified actual-merge on origin/main with git merge-base --is-ancestor.",
+          evidence:
+            "Verified actual-merge on origin/main with git merge-base --is-ancestor; completed the promised 19-node timing proof artifact.",
         };
         const wrong = yield* orchestrator
           .dispatch({
