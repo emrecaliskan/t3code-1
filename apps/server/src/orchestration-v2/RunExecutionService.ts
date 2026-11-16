@@ -571,6 +571,19 @@ export interface RunExecutionServiceV2StartRootRunInput {
   >;
   readonly relatedThreadIds?: ReadonlyArray<ThreadId>;
   readonly relatedProviderThreadIds?: ReadonlyArray<ProviderThreadId>;
+  readonly prepareProviderTurn?: (
+    input: ProviderAdapter.ProviderAdapterV2TurnInput,
+    compact: boolean,
+  ) => Effect.Effect<
+    {
+      readonly input: ProviderAdapter.ProviderAdapterV2TurnInput;
+      readonly onAccepted: Effect.Effect<void>;
+      readonly onNotStarted: (
+        error?: ProviderAdapter.ProviderAdapterTurnStartError,
+      ) => Effect.Effect<void>;
+    },
+    ProviderAdapter.ProviderAdapterTurnStartError
+  >;
   readonly shouldStartProviderTurn?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly shouldFinalizeRun?: () => Effect.Effect<boolean, ProjectionStoreV2Error>;
   readonly hasUnpairedRunInterruptRequest?: () => Effect.Effect<boolean, never>;
@@ -1751,23 +1764,36 @@ export const layer: Layer.Layer<
           runtimePolicy: input.runtimePolicy,
           ...(appContext.length === 0 ? {} : { appContext }),
         };
-        // Check after the context read: ingestion can settle the run while
-        // it awaits. A failed ownership read fails the start below.
-        const shouldStart =
-          input.shouldStartProviderTurn === undefined
-            ? Exit.succeed(true)
-            : yield* Effect.exit(input.shouldStartProviderTurn());
-        if (Exit.isSuccess(shouldStart) && !shouldStart.value) {
-          yield* Fiber.interrupt(providerEventFiber);
-          yield* retireUnstartedRun();
-          return;
-        }
-
         const compact =
           input.message.attachments.length === 0 &&
           input.message.text.trim().toLowerCase() === "/compact";
+        const preparation = yield* Effect.exit(
+          input.prepareProviderTurn === undefined
+            ? Effect.succeed({
+                input: turnInput,
+                onAccepted: Effect.void,
+                onNotStarted: (_error?: ProviderAdapter.ProviderAdapterTurnStartError) =>
+                  Effect.void,
+              })
+            : input.prepareProviderTurn(turnInput, compact),
+        );
+        const shouldStart = yield* Effect.exit(
+          Effect.andThen(
+            preparation,
+            input.shouldStartProviderTurn === undefined
+              ? Effect.succeed(true)
+              : input.shouldStartProviderTurn(),
+          ),
+        );
+        if (Exit.isSuccess(shouldStart) && !shouldStart.value) {
+          yield* Fiber.interrupt(providerEventFiber);
+          if (Exit.isSuccess(preparation)) yield* preparation.value.onNotStarted();
+          yield* retireUnstartedRun();
+          return;
+        }
+        const preparedInput = Exit.isSuccess(preparation) ? preparation.value.input : turnInput;
         const startTurn = compact
-          ? (input.session.compactThread?.(turnInput) ??
+          ? (input.session.compactThread?.(preparedInput) ??
             Effect.fail(
               new ProviderAdapter.ProviderAdapterTurnStartError({
                 driver: input.session.driver,
@@ -1777,8 +1803,16 @@ export const layer: Layer.Layer<
                 cause: "This provider does not support context compaction.",
               }),
             ))
-          : input.session.startTurn(turnInput);
+          : input.session.startTurn(preparedInput);
         yield* Effect.andThen(shouldStart, startTurn).pipe(
+          Effect.tap(() =>
+            Exit.isSuccess(preparation) ? preparation.value.onAccepted : Effect.void,
+          ),
+          Effect.tapError((error) =>
+            Exit.isSuccess(preparation) && error._tag === "ProviderAdapterTurnStartError"
+              ? preparation.value.onNotStarted(error)
+              : Effect.void,
+          ),
           // Wait for acceptance so abandoned startup cannot leave a refresher
           // on the already-detached ingestion fiber.
           Effect.tap(() =>

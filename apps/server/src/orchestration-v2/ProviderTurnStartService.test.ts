@@ -839,7 +839,14 @@ function makeLocalCommandHarness(input: {
     (input: RunExecutionService.RunExecutionServiceV2StartRootRunInput) => Effect.Effect<void>
   >((runInput) =>
     input.sideChat !== undefined
-      ? runInput.session.startTurn(runInput as never).pipe(Effect.orDie)
+      ? Effect.gen(function* () {
+          const prepared =
+            runInput.prepareProviderTurn === undefined
+              ? undefined
+              : yield* runInput.prepareProviderTurn(runInput as never, false);
+          yield* runInput.session.startTurn(prepared?.input ?? (runInput as never));
+          if (prepared !== undefined) yield* prepared.onAccepted;
+        }).pipe(Effect.orDie)
       : input.failReadsAfterRunning === true || input.previousTurn !== undefined
         ? Effect.suspend(() =>
             providerBusy ? Effect.die("The previous provider turn is still running.") : Effect.void,

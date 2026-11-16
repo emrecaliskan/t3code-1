@@ -1244,6 +1244,7 @@ it.effect.each([
   "start-guard",
   "late-start-guard",
   "stale-start-guard",
+  "handoff-start-guard",
 ] as const)("handles %s before the provider turn starts", (scenario) =>
   Effect.gen(function* () {
     const threadId = ThreadId.make("thread:run-execution-settings-failure");
@@ -1260,6 +1261,7 @@ it.effect.each([
     } as OrchestrationV2CheckpointScope;
     const providerStarts = yield* Ref.make(0);
     const guardCalls = yield* Ref.make(0);
+    const admissionWithdrawn = yield* Ref.make(false);
     const guardedStart = scenario.endsWith("start-guard");
     const refreshes = yield* Ref.make(0);
     const guardedWrites = yield* Ref.make(0);
@@ -1348,7 +1350,23 @@ it.effect.each([
           ? {
               shouldStartProviderTurn: () =>
                 Ref.getAndUpdate(guardCalls, (count) => count + 1).pipe(
-                  Effect.map((count) => scenario === "late-start-guard" && count === 0),
+                  Effect.flatMap((count) =>
+                    scenario === "handoff-start-guard"
+                      ? Ref.get(admissionWithdrawn).pipe(Effect.map((withdrawn) => !withdrawn))
+                      : Effect.succeed(scenario === "late-start-guard" && count === 0),
+                  ),
+                ),
+            }
+          : {}),
+        ...(scenario === "handoff-start-guard"
+          ? {
+              prepareProviderTurn: (turnInput: ProviderAdapter.ProviderAdapterV2TurnInput) =>
+                Ref.set(admissionWithdrawn, true).pipe(
+                  Effect.as({
+                    input: turnInput,
+                    onAccepted: Effect.void,
+                    onNotStarted: () => Effect.void,
+                  }),
                 ),
             }
           : {}),
@@ -1408,7 +1426,10 @@ it.effect.each([
     );
     if (guardedStart) {
       assert.isUndefined(errorItem);
-      assert.equal(yield* Ref.get(guardCalls), scenario === "late-start-guard" ? 2 : 1);
+      assert.equal(
+        yield* Ref.get(guardCalls),
+        scenario === "late-start-guard" || scenario === "handoff-start-guard" ? 2 : 1,
+      );
       return;
     }
     assert.isDefined(errorItem);
